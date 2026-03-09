@@ -1,0 +1,95 @@
+#pragma once
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <variant>
+#include <memory>
+#include <algorithm>
+#include <stdexcept>
+#include <fstream>
+#include <sstream>
+#include <iostream>
+
+namespace storage {
+
+// ───── Value type: each cell can be int, double, string, or null ─────
+using Value = std::variant<std::monostate, int64_t, double, std::string>;
+
+enum class DataType { INT, FLOAT, VARCHAR };
+
+struct ColumnSchema {
+    std::string name;
+    DataType type;
+};
+
+// ───── Row = vector of Values ─────
+using Row = std::vector<Value>;
+
+// ───── Table ─────
+class Table {
+public:
+    std::string name;
+    std::vector<ColumnSchema> schema;
+    std::vector<Row> rows;
+
+    Table() = default;
+    Table(const std::string& name, const std::vector<ColumnSchema>& schema)
+        : name(name), schema(schema) {}
+
+    int column_index(const std::string& col_name) const;
+    size_t row_count() const { return rows.size(); }
+    size_t col_count() const { return schema.size(); }
+
+    void insert_row(const Row& row);
+    void load_csv(const std::string& path);
+    void print_rows(const std::vector<std::string>& columns, const std::vector<Row>& result_rows, int max_rows = -1) const;
+
+    // Statistics
+    size_t cardinality() const { return rows.size(); }
+    size_t distinct_values(const std::string& col) const;
+};
+
+// ───── Hash Index ─────
+class HashIndex {
+public:
+    std::string table_name;
+    std::string column_name;
+    std::unordered_map<int64_t, std::vector<size_t>> int_map;
+    std::unordered_map<std::string, std::vector<size_t>> str_map;
+
+    void build(const Table& table);
+    std::vector<size_t> lookup_int(int64_t key) const;
+    std::vector<size_t> lookup_str(const std::string& key) const;
+};
+
+// ───── Catalog ─────
+class Catalog {
+public:
+    std::unordered_map<std::string, std::shared_ptr<Table>> tables;
+    std::unordered_map<std::string, std::shared_ptr<HashIndex>> indexes; // key: "table.column"
+
+    void add_table(std::shared_ptr<Table> table);
+    Table* get_table(const std::string& name);
+    void create_index(const std::string& idx_name, const std::string& table_name,
+                      const std::string& column_name, bool hash);
+    HashIndex* get_index(const std::string& table_name, const std::string& column_name);
+
+    // statistics
+    size_t table_cardinality(const std::string& name) const;
+    size_t column_distinct(const std::string& table, const std::string& col) const;
+};
+
+// ───── Value helpers ─────
+bool value_is_null(const Value& v);
+int64_t value_to_int(const Value& v);
+double value_to_double(const Value& v);
+std::string value_to_string(const Value& v);
+bool value_less(const Value& a, const Value& b);
+bool value_equal(const Value& a, const Value& b);
+Value value_add(const Value& a, const Value& b);
+Value value_sub(const Value& a, const Value& b);
+Value value_mul(const Value& a, const Value& b);
+Value value_div(const Value& a, const Value& b);
+std::string value_display(const Value& v);
+
+} // namespace storage
