@@ -98,7 +98,7 @@ int main(int argc, char* argv[]) {
     storage::Catalog catalog;
 
     std::cout << "╔══════════════════════════════════════════════════╗\n";
-    std::cout << "║     Simple Query Processor & Optimizer (SQP)    ║\n";
+    std::cout << "║     Simple Query Processor & Optimizer (SQP)     ║\n";
     std::cout << "║       Type .help for available commands          ║\n";
     std::cout << "╚══════════════════════════════════════════════════╝\n\n";
 

@@ -114,9 +114,14 @@ static Value eval_expr(const ExprPtr& expr, const EvalCtx& ctx) {
             }
             return std::monostate{};
         }
-        case ExprType::FUNC_CALL:
-            // Aggregates are handled separately in aggregation operator
+        case ExprType::FUNC_CALL: {
+            // In HAVING context, resolve aggregate by matching output column name
+            std::string fn_str = expr->to_string();
+            int idx = ctx.find_col(fn_str);
+            if (idx >= 0 && ctx.row && idx < (int)ctx.row->size())
+                return (*ctx.row)[idx];
             return std::monostate{};
+        }
         case ExprType::IN_EXPR: {
             Value lv = eval_expr(expr->left, ctx);
             for (auto& item : expr->in_list) {
@@ -336,8 +341,8 @@ static ExecResult exec_aggregation(const LogicalNodePtr& node, Catalog& catalog,
         return key;
     };
 
-    if (node->group_exprs.empty() && !child.rows.empty()) {
-        // Single group
+    if (node->group_exprs.empty()) {
+        // Single group even if empty – needed for COUNT(*) on empty tables
         groups[""].rows.reserve(child.rows.size());
         for (auto& row : child.rows) {
             groups[""].rows.push_back(&row);

@@ -30,9 +30,8 @@ include_directories(
     ${CMAKE_BINARY_DIR}
 )
 
-# Source files
-set(SOURCES
-    src/main.cpp
+# Core library sources (everything except main.cpp)
+set(LIB_SOURCES
     src/ast/ast.cpp
     src/storage/table.cpp
     src/storage/catalog.cpp
@@ -49,5 +48,26 @@ set(SOURCES
     ${FLEX_SQLLexer_OUTPUTS}
 )
 
-add_executable(sqp ${SOURCES})
+# Main executable
+add_executable(sqp src/main.cpp ${LIB_SOURCES})
 target_compile_options(sqp PRIVATE -O2 -Wall)
+
+# ───── Tests (Catch2) ─────
+Include(FetchContent)
+FetchContent_Declare(
+    Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG        v3.5.2
+)
+FetchContent_MakeAvailable(Catch2)
+
+add_executable(sqp_tests
+    tests/test_main.cpp
+    ${LIB_SOURCES}
+)
+target_link_libraries(sqp_tests PRIVATE Catch2::Catch2WithMain)
+target_compile_options(sqp_tests PRIVATE -O2 -Wall)
+
+include(CTest)
+include(Catch)
+catch_discover_tests(sqp_tests)
