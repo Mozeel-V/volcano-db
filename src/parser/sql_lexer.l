@@ -63,6 +63,8 @@ extern int yylineno;
 "WITH"              { return WITH; }
 "CREATE"            { return CREATE; }
 "TABLE"             { return TABLE; }
+"VIEW"              { return VIEW; }
+"MATERIALIZED"      { return MATERIALIZED; }
 "INDEX"             { return INDEX; }
 "USING"             { return USING; }
 "HASH"              { return HASH; }

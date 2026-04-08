@@ -57,6 +57,14 @@ SELECT dept, COUNT(*), AVG(salary) FROM employees GROUP BY dept ORDER BY dept;
 -- View the query plan
 EXPLAIN SELECT name, salary FROM employees WHERE salary > 100000;
 
+-- Create a logical view (recomputed on each query)
+CREATE VIEW high_earners AS
+SELECT name, salary FROM employees WHERE salary > 100000;
+
+-- Create a materialized view (snapshot at creation time)
+CREATE MATERIALIZED VIEW top_departments AS
+SELECT dept, COUNT(*) FROM employees GROUP BY dept;
+
 -- Run the built-in benchmark suite
 .benchmark
 ```
@@ -117,7 +125,7 @@ src/
 
 ### Key components
 
-**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), `CREATE TABLE`, `CREATE INDEX`, `INSERT`, `LOAD`, `EXPLAIN`, and `BENCHMARK`.
+**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `INSERT`, `LOAD`, `EXPLAIN`, and `BENCHMARK`.
 
 **AST** (`ast::Expr`, `ast::SelectStmt`, `ast::Statement`) — Tree representation of parsed SQL. Expressions cover column refs, literals, binary/unary ops, function calls (aggregates), subqueries, `IN`, `BETWEEN`, `LIKE`, `CASE`.
 
@@ -146,6 +154,8 @@ SELECT [DISTINCT] <columns> FROM <tables>
 -- DDL / DML
 CREATE TABLE <name> (<col> <type>, ...);
 CREATE INDEX <name> ON <table> (<col>) [USING HASH|BTREE];
+CREATE VIEW <name> AS <query>;
+CREATE MATERIALIZED VIEW <name> AS <query>;
 INSERT INTO <table> VALUES (...);
 LOAD <table> FROM '<file.csv>';
 

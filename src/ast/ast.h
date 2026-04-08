@@ -189,12 +189,20 @@ struct LoadStmt {
     std::string file_path;
 };
 
+struct CreateViewStmt {
+    std::string view_name;
+    std::shared_ptr<SelectStmt> query;
+    bool materialized = false;
+};
+
 // ───── Top-level statement ─────
 
 enum class StmtType {
     ST_SELECT,
     ST_CREATE_TABLE,
     ST_CREATE_INDEX,
+    ST_CREATE_VIEW,
+    ST_CREATE_MATERIALIZED_VIEW,
     ST_INSERT,
     ST_LOAD,
     ST_EXPLAIN,
@@ -206,6 +214,7 @@ struct Statement {
     std::shared_ptr<SelectStmt> select;
     std::shared_ptr<CreateTableStmt> create_table;
     std::shared_ptr<CreateIndexStmt> create_index;
+    std::shared_ptr<CreateViewStmt> create_view;
     std::shared_ptr<InsertStmt> insert;
     std::shared_ptr<LoadStmt> load;
     bool explain_analyze = false;

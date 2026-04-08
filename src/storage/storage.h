@@ -10,6 +10,10 @@
 #include <sstream>
 #include <iostream>
 
+namespace ast {
+struct SelectStmt;
+}
+
 namespace storage {
 
 // ───── Value type: each cell can be int, double, string, or null ─────
@@ -65,11 +69,20 @@ public:
 // ───── Catalog ─────
 class Catalog {
 public:
+    struct ViewDef {
+        std::shared_ptr<ast::SelectStmt> query;
+        bool materialized = false;
+    };
+
     std::unordered_map<std::string, std::shared_ptr<Table>> tables;
     std::unordered_map<std::string, std::shared_ptr<HashIndex>> indexes; // key: "table.column"
+    std::unordered_map<std::string, std::shared_ptr<ViewDef>> views;
 
     void add_table(std::shared_ptr<Table> table);
     Table* get_table(const std::string& name);
+    void add_view(const std::string& name, std::shared_ptr<ast::SelectStmt> query, bool materialized);
+    ViewDef* get_view(const std::string& name);
+    bool has_view(const std::string& name) const;
     void create_index(const std::string& idx_name, const std::string& table_name,
                       const std::string& column_name, bool hash);
     HashIndex* get_index(const std::string& table_name, const std::string& column_name);

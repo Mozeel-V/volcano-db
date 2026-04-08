@@ -41,6 +41,7 @@ set(LIB_SOURCES
     src/optimizer/rule_optimizer.cpp
     src/optimizer/cost_optimizer.cpp
     src/executor/executor.cpp
+    src/executor/view_support.cpp
     src/executor/operators.cpp
     src/benchmark/benchmark.cpp
     src/benchmark/data_generator.cpp

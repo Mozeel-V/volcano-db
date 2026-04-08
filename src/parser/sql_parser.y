@@ -73,7 +73,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %token AS ON JOIN INNER LEFT RIGHT FULL OUTER CROSS
 %token GROUP BY HAVING ORDER ASC DESC LIMIT OFFSET
 %token UNION INTERSECT EXCEPT ALL SOME ANY
-%token WITH CREATE TABLE INDEX USING HASH BTREE
+%token WITH CREATE TABLE VIEW MATERIALIZED INDEX USING HASH BTREE
 %token INSERT INTO VALUES LOAD EXPLAIN ANALYZE BENCHMARK_KW
 %token COUNT SUM AVG MIN MAX
 %token TYPE_INT TYPE_FLOAT TYPE_VARCHAR
@@ -147,6 +147,22 @@ statement:
           auto ci = std::make_shared<CreateIndexStmt>();
           ci->index_name = take_str($3); ci->table_name = take_str($5); ci->column_name = take_str($7);
           ci->hash_index = true; st->create_index = ci; $$ = st;
+      }
+    | CREATE VIEW IDENTIFIER AS select_stmt {
+          auto st = new Statement(); st->type = StmtType::ST_CREATE_VIEW;
+          auto cv = std::make_shared<CreateViewStmt>();
+          cv->view_name = take_str($3);
+          cv->query.reset($5);
+          cv->materialized = false;
+          st->create_view = cv; $$ = st;
+      }
+    | CREATE MATERIALIZED VIEW IDENTIFIER AS select_stmt {
+          auto st = new Statement(); st->type = StmtType::ST_CREATE_MATERIALIZED_VIEW;
+          auto cv = std::make_shared<CreateViewStmt>();
+          cv->view_name = take_str($4);
+          cv->query.reset($6);
+          cv->materialized = true;
+          st->create_view = cv; $$ = st;
       }
     | INSERT INTO IDENTIFIER VALUES insert_rows {
           auto st = new Statement(); st->type = StmtType::ST_INSERT;

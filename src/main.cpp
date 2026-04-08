@@ -10,6 +10,7 @@
 #include "planner/planner.h"
 #include "optimizer/optimizer.h"
 #include "executor/executor.h"
+#include "executor/view_support.h"
 #include "benchmark/benchmark.h"
 
 // From Bison-generated parser
@@ -35,7 +36,8 @@ StmtPtr parse_sql(const std::string& sql) {
 static void print_help() {
     std::cout << R"(
 Simple Query Processor — Commands:
-  SQL queries:      SELECT, CREATE TABLE, CREATE INDEX, INSERT, LOAD
+    SQL queries:      SELECT, CREATE TABLE, CREATE INDEX, CREATE VIEW,
+                                        CREATE MATERIALIZED VIEW, INSERT, LOAD
   EXPLAIN <query>   Show query plan
   EXPLAIN ANALYZE   Show plan + execution stats
   BENCHMARK <query> Run query with performance profiling
@@ -137,6 +139,11 @@ int main(int argc, char* argv[]) {
                 for (auto& [name, tbl] : catalog.tables) {
                     std::cout << "  " << name << " (" << tbl->rows.size() << " rows)\n";
                 }
+                for (auto& [name, view] : catalog.views) {
+                    if (!view->materialized) {
+                        std::cout << "  " << name << " (view)\n";
+                    }
+                }
                 std::cout << "sqp> "; continue;
             }
             if (line.substr(0, 7) == ".schema") {
@@ -217,6 +224,36 @@ int main(int argc, char* argv[]) {
                     catalog.create_index(ci.index_name, ci.table_name, ci.column_name, ci.hash_index);
                     break;
                 }
+                case ast::StmtType::ST_CREATE_VIEW: {
+                    auto& cv = *stmt->create_view;
+                    if (catalog.get_table(cv.view_name) || catalog.has_view(cv.view_name)) {
+                        throw std::runtime_error("Relation already exists: " + cv.view_name);
+                    }
+                    catalog.add_view(cv.view_name, cv.query, false);
+                    std::cout << "View '" << cv.view_name << "' created.\n";
+                    break;
+                }
+                case ast::StmtType::ST_CREATE_MATERIALIZED_VIEW: {
+                    auto& cv = *stmt->create_view;
+                    if (catalog.get_table(cv.view_name) || catalog.has_view(cv.view_name)) {
+                        throw std::runtime_error("Relation already exists: " + cv.view_name);
+                    }
+
+                    std::vector<std::string> temp_tables;
+                    executor::materialize_dynamic_views_for_select(*cv.query, catalog, temp_tables);
+                    try {
+                        auto mat_tbl = executor::materialize_select_to_table(cv.view_name, *cv.query, catalog);
+                        catalog.add_table(mat_tbl);
+                        catalog.add_view(cv.view_name, cv.query, true);
+                        executor::cleanup_temporary_views(catalog, temp_tables);
+                        std::cout << "Materialized view '" << cv.view_name << "' created ("
+                                  << mat_tbl->rows.size() << " rows).\n";
+                    } catch (...) {
+                        executor::cleanup_temporary_views(catalog, temp_tables);
+                        throw;
+                    }
+                    break;
+                }
                 case ast::StmtType::ST_INSERT: {
                     std::cout << "INSERT executed (simplified — row data not captured in grammar).\n";
                     break;
@@ -233,48 +270,66 @@ int main(int argc, char* argv[]) {
                     break;
                 }
                 case ast::StmtType::ST_EXPLAIN: {
-                    auto plan = planner::build_logical_plan(*stmt->select, catalog);
-                    std::cout << "\n── Logical Plan (before optimization) ──\n";
-                    std::cout << plan->to_string();
+                    std::vector<std::string> temp_tables;
+                    executor::materialize_dynamic_views_for_select(*stmt->select, catalog, temp_tables);
 
-                    auto opt_plan = optimizer::optimize(plan, catalog);
-                    std::cout << "\n── Optimized Plan ──\n";
-                    std::cout << opt_plan->to_string();
+                    try {
+                        auto plan = planner::build_logical_plan(*stmt->select, catalog);
+                        std::cout << "\n── Logical Plan (before optimization) ──\n";
+                        std::cout << plan->to_string();
 
-                    if (stmt->explain_analyze) {
-                        auto result = executor::execute(opt_plan, catalog);
-                        std::cout << "\n── Execution Statistics ──\n";
-                        std::cout << "  Rows scanned:     " << result.stats.rows_scanned << "\n";
-                        std::cout << "  Rows filtered:    " << result.stats.rows_filtered << "\n";
-                        std::cout << "  Join comparisons: " << result.stats.join_comparisons << "\n";
-                        std::cout << "  Rows produced:    " << result.stats.rows_produced << "\n";
-                        std::cout << "  Execution time:   " << std::fixed << std::setprecision(3)
-                                  << result.stats.exec_time_ms << " ms\n";
+                        auto opt_plan = optimizer::optimize(plan, catalog);
+                        std::cout << "\n── Optimized Plan ──\n";
+                        std::cout << opt_plan->to_string();
+
+                        if (stmt->explain_analyze) {
+                            auto result = executor::execute(opt_plan, catalog);
+                            std::cout << "\n── Execution Statistics ──\n";
+                            std::cout << "  Rows scanned:     " << result.stats.rows_scanned << "\n";
+                            std::cout << "  Rows filtered:    " << result.stats.rows_filtered << "\n";
+                            std::cout << "  Join comparisons: " << result.stats.join_comparisons << "\n";
+                            std::cout << "  Rows produced:    " << result.stats.rows_produced << "\n";
+                            std::cout << "  Execution time:   " << std::fixed << std::setprecision(3)
+                                      << result.stats.exec_time_ms << " ms\n";
+                        }
+
+                        executor::cleanup_temporary_views(catalog, temp_tables);
+                    } catch (...) {
+                        executor::cleanup_temporary_views(catalog, temp_tables);
+                        throw;
                     }
                     break;
                 }
                 case ast::StmtType::ST_SELECT: {
-                    auto plan = planner::build_logical_plan(*stmt->select, catalog);
-                    auto opt_plan = optimizer::optimize(plan, catalog);
-                    auto result = executor::execute(opt_plan, catalog);
+                    auto result = executor::execute_select_with_views(*stmt->select, catalog);
                     print_result(result, false);
                     break;
                 }
                 case ast::StmtType::ST_BENCHMARK: {
-                    auto plan_unopt = planner::build_logical_plan(*stmt->select, catalog);
-                    auto result_unopt = executor::execute(plan_unopt, catalog);
-                    std::cout << "Unoptimized: " << result_unopt.stats.exec_time_ms << " ms, "
-                              << result_unopt.rows.size() << " rows\n";
+                    std::vector<std::string> temp_tables;
+                    executor::materialize_dynamic_views_for_select(*stmt->select, catalog, temp_tables);
 
-                    auto plan_opt = planner::build_logical_plan(*stmt->select, catalog);
-                    auto opt = optimizer::optimize(plan_opt, catalog);
-                    auto result_opt = executor::execute(opt, catalog);
-                    std::cout << "Optimized:   " << result_opt.stats.exec_time_ms << " ms, "
-                              << result_opt.rows.size() << " rows\n";
+                    try {
+                        auto plan_unopt = planner::build_logical_plan(*stmt->select, catalog);
+                        auto result_unopt = executor::execute(plan_unopt, catalog);
+                        std::cout << "Unoptimized: " << result_unopt.stats.exec_time_ms << " ms, "
+                                  << result_unopt.rows.size() << " rows\n";
 
-                    double speedup = result_unopt.stats.exec_time_ms > 0 ?
-                        result_unopt.stats.exec_time_ms / result_opt.stats.exec_time_ms : 1.0;
-                    std::cout << "Speedup:     " << std::fixed << std::setprecision(2) << speedup << "x\n";
+                        auto plan_opt = planner::build_logical_plan(*stmt->select, catalog);
+                        auto opt = optimizer::optimize(plan_opt, catalog);
+                        auto result_opt = executor::execute(opt, catalog);
+                        std::cout << "Optimized:   " << result_opt.stats.exec_time_ms << " ms, "
+                                  << result_opt.rows.size() << " rows\n";
+
+                        double speedup = result_unopt.stats.exec_time_ms > 0 ?
+                            result_unopt.stats.exec_time_ms / result_opt.stats.exec_time_ms : 1.0;
+                        std::cout << "Speedup:     " << std::fixed << std::setprecision(2) << speedup << "x\n";
+
+                        executor::cleanup_temporary_views(catalog, temp_tables);
+                    } catch (...) {
+                        executor::cleanup_temporary_views(catalog, temp_tables);
+                        throw;
+                    }
                     break;
                 }
             }

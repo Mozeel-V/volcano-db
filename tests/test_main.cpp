@@ -8,6 +8,7 @@
 #include "planner/planner.h"
 #include "optimizer/optimizer.h"
 #include "executor/executor.h"
+#include "executor/view_support.h"
 #include "benchmark/benchmark.h"
 
 #include <memory>
@@ -45,14 +46,10 @@ static executor::ExecResult run_query(storage::Catalog& catalog, const std::stri
     REQUIRE(stmt != nullptr);
 
     if (stmt->type == ast::StmtType::ST_SELECT) {
-        auto plan = planner::build_logical_plan(*stmt->select, catalog);
-        auto opt  = optimizer::optimize(plan, catalog);
-        return executor::execute(opt, catalog);
+        return executor::execute_select_with_views(*stmt->select, catalog);
     }
     if (stmt->type == ast::StmtType::ST_EXPLAIN) {
-        auto plan = planner::build_logical_plan(*stmt->select, catalog);
-        auto opt  = optimizer::optimize(plan, catalog);
-        return executor::execute(opt, catalog);
+        return executor::execute_select_with_views(*stmt->select, catalog);
     }
     FAIL("run_query: unsupported statement type for execution");
     return {};
@@ -191,6 +188,27 @@ TEST_CASE("Parser: CREATE INDEX USING HASH", "[parser][ddl]") {
     REQUIRE(stmt != nullptr);
     REQUIRE(stmt->type == ast::StmtType::ST_CREATE_INDEX);
     CHECK(stmt->create_index->hash_index == true);
+}
+
+TEST_CASE("Parser: CREATE VIEW", "[parser][ddl]") {
+    auto stmt = ast::parse_sql("CREATE VIEW v_users AS SELECT id, name FROM users;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_CREATE_VIEW);
+    REQUIRE(stmt->create_view != nullptr);
+    CHECK(stmt->create_view->view_name == "v_users");
+    CHECK(stmt->create_view->materialized == false);
+    REQUIRE(stmt->create_view->query != nullptr);
+    CHECK(stmt->create_view->query->select_list.size() == 2);
+}
+
+TEST_CASE("Parser: CREATE MATERIALIZED VIEW", "[parser][ddl]") {
+    auto stmt = ast::parse_sql("CREATE MATERIALIZED VIEW mv_users AS SELECT id FROM users;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_CREATE_MATERIALIZED_VIEW);
+    REQUIRE(stmt->create_view != nullptr);
+    CHECK(stmt->create_view->view_name == "mv_users");
+    CHECK(stmt->create_view->materialized == true);
+    REQUIRE(stmt->create_view->query != nullptr);
 }
 
 TEST_CASE("Parser: INSERT INTO basic", "[parser][ddl]") {
@@ -959,6 +977,22 @@ TEST_CASE("Storage: Catalog cardinality and distinct", "[storage][catalog]") {
     CHECK(catalog.table_cardinality("missing") == 0);
 }
 
+TEST_CASE("Storage: Catalog add and get view", "[storage][catalog]") {
+    storage::Catalog catalog;
+    auto stmt = ast::parse_sql("SELECT id FROM users;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_SELECT);
+
+    catalog.add_view("v_users", stmt->select, false);
+    CHECK(catalog.has_view("v_users") == true);
+    CHECK(catalog.has_view("missing") == false);
+
+    auto* v = catalog.get_view("v_users");
+    REQUIRE(v != nullptr);
+    CHECK(v->materialized == false);
+    REQUIRE(v->query != nullptr);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // SECTION 13: STORAGE — HASH INDEX
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1534,6 +1568,57 @@ TEST_CASE("E2E: Aggregate without GROUP BY", "[e2e][combined]") {
     CHECK(as_int(res.rows[0][1]) == 15);    // SUM
     CHECK(as_int(res.rows[0][3]) == 1);     // MIN
     CHECK(as_int(res.rows[0][4]) == 5);     // MAX
+}
+
+TEST_CASE("E2E: non-materialized VIEW reflects latest data", "[e2e][view]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+
+    auto create_view_stmt = ast::parse_sql("CREATE VIEW v_t AS SELECT id, name FROM t WHERE id >= 3;");
+    REQUIRE(create_view_stmt != nullptr);
+    REQUIRE(create_view_stmt->type == ast::StmtType::ST_CREATE_VIEW);
+    catalog.add_view(create_view_stmt->create_view->view_name, create_view_stmt->create_view->query, false);
+
+    auto r1 = run_query(catalog, "SELECT id FROM v_t ORDER BY id;");
+    REQUIRE(r1.rows.size() == 3);
+    CHECK(as_int(r1.rows[0][0]) == 3);
+    CHECK(as_int(r1.rows[2][0]) == 5);
+
+    auto* base = catalog.get_table("t");
+    REQUIRE(base != nullptr);
+    base->insert_row({(int64_t)6, std::string("Frank"), 4.20, std::string("Engineering")});
+
+    auto r2 = run_query(catalog, "SELECT id FROM v_t ORDER BY id;");
+    REQUIRE(r2.rows.size() == 4);
+    CHECK(as_int(r2.rows[3][0]) == 6);
+}
+
+TEST_CASE("E2E: MATERIALIZED VIEW keeps snapshot", "[e2e][view]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+
+    auto create_mv_stmt = ast::parse_sql("CREATE MATERIALIZED VIEW mv_t AS SELECT id FROM t WHERE id <= 3;");
+    REQUIRE(create_mv_stmt != nullptr);
+    REQUIRE(create_mv_stmt->type == ast::StmtType::ST_CREATE_MATERIALIZED_VIEW);
+
+    auto mv_tbl = executor::materialize_select_to_table(
+        create_mv_stmt->create_view->view_name,
+        *create_mv_stmt->create_view->query,
+        catalog);
+    catalog.add_table(mv_tbl);
+    catalog.add_view(create_mv_stmt->create_view->view_name, create_mv_stmt->create_view->query, true);
+
+    auto r1 = run_query(catalog, "SELECT id FROM mv_t ORDER BY id;");
+    REQUIRE(r1.rows.size() == 3);
+    CHECK(as_int(r1.rows[2][0]) == 3);
+
+    auto* base = catalog.get_table("t");
+    REQUIRE(base != nullptr);
+    base->insert_row({(int64_t)0, std::string("Zero"), 1.00, std::string("HR")});
+
+    auto r2 = run_query(catalog, "SELECT id FROM mv_t ORDER BY id;");
+    REQUIRE(r2.rows.size() == 3);
+    CHECK(as_int(r2.rows[0][0]) == 1);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -12,6 +12,23 @@ Table* Catalog::get_table(const std::string& name) {
     return it->second.get();
 }
 
+void Catalog::add_view(const std::string& name, std::shared_ptr<ast::SelectStmt> query, bool materialized) {
+    auto def = std::make_shared<ViewDef>();
+    def->query = std::move(query);
+    def->materialized = materialized;
+    views[name] = def;
+}
+
+Catalog::ViewDef* Catalog::get_view(const std::string& name) {
+    auto it = views.find(name);
+    if (it == views.end()) return nullptr;
+    return it->second.get();
+}
+
+bool Catalog::has_view(const std::string& name) const {
+    return views.find(name) != views.end();
+}
+
 void Catalog::create_index(const std::string& idx_name, const std::string& table_name,
                            const std::string& column_name, bool hash) {
     auto tbl = get_table(table_name);
