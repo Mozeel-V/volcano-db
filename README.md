@@ -39,6 +39,18 @@ This produces the `sqp` executable in the `build/` directory.
 
 This starts an interactive REPL. Type `.help` for a list of commands.
 
+You can also execute commands from a SQL file:
+
+```bash
+./sqp path/to/script.sql
+```
+
+or
+
+```bash
+./sqp --file path/to/script.sql
+```
+
 ### Quick start
 
 ```sql
@@ -77,6 +89,7 @@ SELECT dept, COUNT(*) FROM employees GROUP BY dept;
 | `.tables` | List loaded tables |
 | `.schema <table>` | Show table schema |
 | `.generate <n>` | Generate sample data with n employee rows |
+| `.source <file>` | Execute SQL commands from a file |
 | `.benchmark` | Run benchmark suite (optimized vs unoptimized) |
 | `.quit` / `.exit` | Exit |
 
