@@ -165,4 +165,4 @@ All tests are in `tests/test_main.cpp`, organized by section:
 
 ## Test Results
 
-**225 test cases — 745 assertions — all passing**
+**230 test cases — 789 assertions — all passing**
