@@ -5,6 +5,8 @@
 #include <chrono>
 #include <iomanip>
 #include <fstream>
+#include <algorithm>
+#include <vector>
 
 #include "ast/ast.h"
 #include "storage/storage.h"
@@ -47,6 +49,7 @@ Simple Query Processor — Commands:
     .tables         List loaded tables
     .schema <tbl>   Show table schema
     .generate <n>   Generate sample data (n rows)
+    .save <file>    Save all current tables to a text file
     .source <file>  Execute SQL commands from file
     .benchmark      Run benchmark suite
     .quit / .exit   Exit
@@ -62,6 +65,100 @@ static std::string trim_copy(const std::string& s) {
 
 static bool starts_with(const std::string& value, const std::string& prefix) {
     return value.rfind(prefix, 0) == 0;
+}
+
+static std::string data_type_to_string(storage::DataType type) {
+    switch (type) {
+        case storage::DataType::INT: return "INT";
+        case storage::DataType::FLOAT: return "FLOAT";
+        case storage::DataType::VARCHAR: return "VARCHAR";
+    }
+    return "VARCHAR";
+}
+
+static void write_table_dump(std::ostream& out, const storage::Table& tbl) {
+    out << "Table: " << tbl.name << "\n";
+    out << "Rows: " << tbl.rows.size() << "\n";
+    out << "Schema:\n";
+    for (const auto& col : tbl.schema) {
+        out << "  - " << col.name << " " << data_type_to_string(col.type) << "\n";
+    }
+
+    if (tbl.schema.empty()) {
+        out << "Data:\n";
+        out << "(no columns)\n\n";
+        return;
+    }
+
+    std::vector<size_t> widths(tbl.schema.size(), 0);
+    for (size_t i = 0; i < tbl.schema.size(); i++) {
+        widths[i] = tbl.schema[i].name.size();
+    }
+
+    for (const auto& row : tbl.rows) {
+        for (size_t i = 0; i < tbl.schema.size() && i < row.size(); i++) {
+            widths[i] = std::max(widths[i], storage::value_display(row[i]).size());
+        }
+    }
+
+    out << "Data:\n";
+    for (size_t i = 0; i < tbl.schema.size(); i++) {
+        if (i) out << " | ";
+        out << std::left << std::setw(static_cast<int>(widths[i])) << tbl.schema[i].name;
+    }
+    out << "\n";
+
+    for (size_t i = 0; i < tbl.schema.size(); i++) {
+        if (i) out << "-+-";
+        out << std::string(widths[i], '-');
+    }
+    out << "\n";
+
+    if (tbl.rows.empty()) {
+        out << "(empty table)\n\n";
+        return;
+    }
+
+    for (const auto& row : tbl.rows) {
+        for (size_t i = 0; i < tbl.schema.size(); i++) {
+            if (i) out << " | ";
+            std::string cell = i < row.size() ? storage::value_display(row[i]) : "NULL";
+            out << std::left << std::setw(static_cast<int>(widths[i])) << cell;
+        }
+        out << "\n";
+    }
+    out << "\n";
+}
+
+static bool save_tables_to_file(const std::string& path, const storage::Catalog& catalog) {
+    std::ofstream out(path, std::ios::out | std::ios::trunc);
+    if (!out.is_open()) {
+        std::cout << "Error: could not open output file '" << path << "'\n";
+        return false;
+    }
+
+    out << "Simple Query Processor Table Dump\n";
+    out << "=================================\n\n";
+
+    std::vector<std::string> table_names;
+    table_names.reserve(catalog.tables.size());
+    for (const auto& [name, _] : catalog.tables) {
+        table_names.push_back(name);
+    }
+    std::sort(table_names.begin(), table_names.end());
+
+    if (table_names.empty()) {
+        out << "No tables loaded.\n";
+        std::cout << "Saved 0 tables to '" << path << "'\n";
+        return true;
+    }
+
+    for (const auto& table_name : table_names) {
+        write_table_dump(out, *catalog.tables.at(table_name));
+    }
+
+    std::cout << "Saved " << table_names.size() << " tables to '" << path << "'\n";
+    return true;
 }
 
 static void print_result(const executor::ExecResult& res, bool show_stats) {
@@ -293,6 +390,15 @@ static bool handle_dot_command(const std::string& line, storage::Catalog& catalo
         benchmark::generate_employees(catalog, n);
         benchmark::generate_departments(catalog, 10);
         benchmark::generate_orders(catalog, n / 2);
+        return true;
+    }
+    if (starts_with(line, ".save")) {
+        std::string path = trim_copy(line.substr(5));
+        if (path.empty()) {
+            std::cout << "Usage: .save <file>\n";
+            return true;
+        }
+        save_tables_to_file(path, catalog);
         return true;
     }
     if (starts_with(line, ".source")) {

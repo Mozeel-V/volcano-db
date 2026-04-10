@@ -89,6 +89,9 @@ SELECT dept, COUNT(*) FROM employees GROUP BY dept;
 
 -- Run the built-in benchmark suite
 .benchmark
+
+-- Save all current tables to a formatted text dump
+.save sqp_dump.txt
 ```
 
 ### REPL commands
@@ -99,6 +102,7 @@ SELECT dept, COUNT(*) FROM employees GROUP BY dept;
 | `.tables` | List loaded tables |
 | `.schema <table>` | Show table schema |
 | `.generate <n>` | Generate sample data with n employee rows |
+| `.save <file>` | Save all current tables to a formatted text file (creates or overwrites) |
 | `.source <file>` | Execute SQL commands from a file |
 | `.benchmark` | Run benchmark suite (optimized vs unoptimized) |
 | `.quit` / `.exit` | Exit |
@@ -263,7 +267,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 42 | Additional Tests | `[optimizer]` | 1 | Generated | 
 | 43 | Additional Tests | `[parser][error]` | 2 | Generated | 
 | 44 | Additional Tests | `[planner][optimizer]` | 1 | Generated |
-| 45 | E2E: CLI Commands | `[e2e][commands]` | 19 | `.help`, `.tables` (empty/generated/created), `.schema` (valid/invalid), `.generate` (with/without arg), `.benchmark` (empty/loaded), `.quit`, `.exit`, `.source` (valid/missing file/no arg), `--file` (valid/missing/no arg), bare arg as file, unknown command |
+| 45 | E2E: CLI Commands | `[e2e][commands]` | 22 | `.help`, `.tables` (empty/generated/created), `.schema` (valid/invalid), `.generate` (with/without arg), `.save` (create/overwrite/missing arg), `.benchmark` (empty/loaded), `.quit`, `.exit`, `.source` (valid/missing file/no arg), `--file` (valid/missing/no arg), bare arg as file, unknown command |
 
 ### Test Categories Summary
 
@@ -280,7 +284,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | **Edge Cases** | ~13 | Empty tables, single rows, long strings, negative values, NULL-heavy, self-joins, boundary conditions |
 | **Regression** | ~8 | Complex nested logic, boundary BETWEEN, single IN, expression aliases, compound queries |
 | **Benchmarks** | ~8 | Data generation, query correctness on generated data |
-| **CLI Commands** | 19 | All dot commands (`.help`, `.tables`, `.schema`, `.generate`, `.benchmark`, `.quit`, `.exit`, `.source`), `--file`, bare arg, unknown command, error handling |
+| **CLI Commands** | 22 | All dot commands (`.help`, `.tables`, `.schema`, `.generate`, `.save`, `.benchmark`, `.quit`, `.exit`, `.source`), `--file`, bare arg, unknown command, error handling |
 
 ### Features Tested
 
@@ -291,6 +295,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 - `CREATE INDEX` (basic, USING HASH)
 - `INSERT INTO ... VALUES`
 - `LOAD table 'file'`
+- `.save <file>` (Save current tables to a formatted text file)
 - `.source <file>` (Execute SQL commands from file)
 - `--file <file>` (Command line script execution)
 - `EXPLAIN SELECT`
@@ -372,6 +377,6 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 
 ### Test Results
 
-- **SQL Tests** (`tests/test_main.cpp`): 243 test cases — 789 assertions — all passing
-- **Command Tests** (`tests/test_commands.cpp`): 19 test cases — 37 assertions — all passing
-- **Total**: 262 test cases — 826 assertions — **all passing**
+- **SQL Tests** (`tests/test_main.cpp`): 230 test cases — 789 assertions — all passing
+- **Command Tests** (`tests/test_commands.cpp`): 22 test cases — 47 assertions — all passing
+- **Total**: 252 test cases — 836 assertions — all passing

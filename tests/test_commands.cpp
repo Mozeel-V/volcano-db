@@ -30,6 +30,12 @@ static std::string run_interactive(const std::string& commands) {
     return output;
 }
 
+static std::string read_text_file(const std::string& path) {
+    std::ifstream ifs(path);
+    if (!ifs) return "";
+    return std::string(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
+}
+
 // ─────────────────────── .source / --file tests ───────────────────────
 
 TEST_CASE("E2E: Execute SQL via --file", "[e2e][commands]") {
@@ -95,9 +101,63 @@ TEST_CASE("E2E: .help command", "[e2e][commands]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".tables"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".schema"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".generate"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".save"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".source"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".benchmark"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".quit"));
+}
+
+// ─────────────────────── .save ───────────────────────
+
+TEST_CASE("E2E: .save with no argument", "[e2e][commands]") {
+    std::string output = run_interactive(
+        ".save\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Usage: .save <file>"));
+}
+
+TEST_CASE("E2E: .save creates formatted dump file", "[e2e][commands]") {
+    const std::string dump_file = "repl_save_dump.txt";
+    std::remove(dump_file.c_str());
+
+    std::string output = run_interactive(
+        ".generate 3\n"
+        ".save repl_save_dump.txt\n"
+        ".quit\n"
+    );
+
+    std::string dump = read_text_file(dump_file);
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Saved 3 tables to 'repl_save_dump.txt'"));
+    CHECK(!dump.empty());
+    CHECK_THAT(dump, Catch::Matchers::ContainsSubstring("Simple Query Processor Table Dump"));
+    CHECK_THAT(dump, Catch::Matchers::ContainsSubstring("Table: employees"));
+    CHECK_THAT(dump, Catch::Matchers::ContainsSubstring("Rows: 3"));
+
+    std::remove(dump_file.c_str());
+}
+
+TEST_CASE("E2E: .save overwrites existing file", "[e2e][commands]") {
+    const std::string dump_file = "repl_save_overwrite.txt";
+    {
+        std::ofstream out(dump_file);
+        out << "OLD_CONTENT_SHOULD_BE_OVERWRITTEN\n";
+    }
+
+    run_interactive(
+        ".generate 2\n"
+        ".save repl_save_overwrite.txt\n"
+        ".quit\n"
+    );
+
+    std::string dump = read_text_file(dump_file);
+    CHECK(dump.find("OLD_CONTENT_SHOULD_BE_OVERWRITTEN") == std::string::npos);
+    CHECK_THAT(dump, Catch::Matchers::ContainsSubstring("Table: employees"));
+    CHECK_THAT(dump, Catch::Matchers::ContainsSubstring("Rows: 2"));
+
+    std::remove(dump_file.c_str());
 }
 
 // ─────────────────────── .tables ───────────────────────
