@@ -97,6 +97,12 @@ extern int yylineno;
 "END"               { return END; }
 "TRUE"              { return TRUE_KW; }
 "FALSE"             { return FALSE_KW; }
+"ALTER"             { return ALTER; }
+"ADD"               { return ADD; }
+"COLUMN"            { return COLUMN; }
+"RENAME"            { return RENAME; }
+"TO"                { return TO; }
+"DROP"              { return DROP; }
 
     /* ── Operators ── */
 "<="                { return LEQ; }

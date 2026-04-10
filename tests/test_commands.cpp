@@ -497,3 +497,160 @@ TEST_CASE("E2E: DELETE WHERE no rows match", "[e2e][dml]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("0 row(s) deleted"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
 }
+
+// ─────────────────────── ALTER TABLE Tests ───────────────────────
+
+TEST_CASE("E2E: ALTER TABLE ADD COLUMN with NULL in old rows", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob');\n"
+        "ALTER TABLE t ADD COLUMN age INT;\n"
+        "INSERT INTO t VALUES (3, 'Carol', 30);\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Column 'age' added to table 't'"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("NULL"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Carol"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("30"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(3 rows)"));
+}
+
+TEST_CASE("E2E: ALTER TABLE DROP COLUMN", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR, score INT);\n"
+        "INSERT INTO t VALUES (1, 'Alice', 90), (2, 'Bob', 80);\n"
+        "ALTER TABLE t DROP COLUMN score;\n"
+        ".schema t\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Column 'score' dropped from table 't'"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(2 rows)"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Alice"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Bob"));
+}
+
+TEST_CASE("E2E: ALTER TABLE RENAME COLUMN", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob');\n"
+        "ALTER TABLE t RENAME COLUMN name TO full_name;\n"
+        "SELECT full_name FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Column 'name' renamed to 'full_name'"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Alice"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Bob"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(2 rows)"));
+}
+
+TEST_CASE("E2E: ALTER TABLE RENAME TO", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice');\n"
+        "ALTER TABLE t RENAME TO people;\n"
+        "SELECT * FROM people;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 't' renamed to 'people'"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Alice"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
+}
+
+TEST_CASE("E2E: ALTER TABLE RENAME TO old name no longer works", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice');\n"
+        "ALTER TABLE t RENAME TO people;\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 't' renamed to 'people'"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Error"));
+}
+
+TEST_CASE("E2E: ALTER TABLE ADD duplicate column error", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "ALTER TABLE t ADD COLUMN name VARCHAR;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("already exists"));
+}
+
+TEST_CASE("E2E: ALTER TABLE DROP nonexistent column error", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "ALTER TABLE t DROP COLUMN ghost;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("not found"));
+}
+
+TEST_CASE("E2E: ALTER TABLE DROP last column error", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT);\n"
+        "ALTER TABLE t DROP COLUMN id;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("cannot drop the last column"));
+}
+
+TEST_CASE("E2E: ALTER TABLE RENAME TO existing table error", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t1 (id INT);\n"
+        "CREATE TABLE t2 (id INT);\n"
+        "ALTER TABLE t1 RENAME TO t2;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("already exists"));
+}
+
+TEST_CASE("E2E: ALTER TABLE on nonexistent table error", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "ALTER TABLE ghost ADD COLUMN x INT;\n"
+        "ALTER TABLE ghost DROP COLUMN x;\n"
+        "ALTER TABLE ghost RENAME COLUMN x TO y;\n"
+        "ALTER TABLE ghost RENAME TO other;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("table not found"));
+}
+
+TEST_CASE("E2E: ALTER TABLE RENAME COLUMN to existing name error", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "ALTER TABLE t RENAME COLUMN id TO name;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("already exists"));
+}
+
+TEST_CASE("E2E: ALTER TABLE with index compatibility", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR, score INT);\n"
+        "INSERT INTO t VALUES (1, 'Alice', 90), (2, 'Bob', 80);\n"
+        "CREATE INDEX idx_id ON t (id);\n"
+        "ALTER TABLE t ADD COLUMN age INT;\n"
+        "ALTER TABLE t DROP COLUMN score;\n"
+        "SELECT * FROM t WHERE id = 1;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Column 'age' added"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Column 'score' dropped"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Alice"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
+}

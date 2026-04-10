@@ -54,13 +54,7 @@ add_executable(sqp src/main.cpp ${LIB_SOURCES})
 target_compile_options(sqp PRIVATE -O2 -Wall)
 
 # ───── Tests (Catch2) ─────
-Include(FetchContent)
-FetchContent_Declare(
-    Catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG        v3.5.2
-)
-FetchContent_MakeAvailable(Catch2)
+find_package(Catch2 3 REQUIRED)
 
 add_executable(sqp_tests
     tests/test_main.cpp

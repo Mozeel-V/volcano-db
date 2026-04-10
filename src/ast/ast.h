@@ -206,6 +206,13 @@ struct CreateViewStmt {
     bool materialized = false;
 };
 
+struct AlterStmt {
+    std::string table_name;
+    std::string column_name;   // for ADD/DROP/RENAME col
+    std::string column_type;   // for ADD col
+    std::string new_name;      // for RENAME col/table
+};
+
 // ───── Top-level statement ─────
 
 enum class StmtType {
@@ -220,6 +227,10 @@ enum class StmtType {
     ST_LOAD,
     ST_EXPLAIN,
     ST_BENCHMARK,
+    ST_ALTER_ADD_COL,
+    ST_ALTER_DROP_COL,
+    ST_ALTER_RENAME_COL,
+    ST_ALTER_RENAME_TBL,
 };
 
 struct Statement {
@@ -232,6 +243,7 @@ struct Statement {
     std::shared_ptr<UpdateStmt> update;
     std::shared_ptr<DeleteStmt> del;
     std::shared_ptr<LoadStmt> load;
+    std::shared_ptr<AlterStmt> alter;
     bool explain_analyze = false;
 };
 

@@ -90,6 +90,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %token WITH CREATE TABLE VIEW MATERIALIZED INDEX USING HASH BTREE
 %token INSERT INTO VALUES LOAD EXPLAIN ANALYZE BENCHMARK_KW
 %token UPDATE SET DELETE_KW
+%token ALTER ADD COLUMN RENAME TO DROP
 %token COUNT SUM AVG MIN MAX
 %token TYPE_INT TYPE_FLOAT TYPE_VARCHAR
 %token CASE WHEN THEN ELSE END
@@ -244,6 +245,36 @@ statement:
     | BENCHMARK_KW select_stmt {
           auto st = new Statement(); st->type = StmtType::ST_BENCHMARK;
           st->select.reset($2); $$ = st;
+      }
+    | ALTER TABLE IDENTIFIER ADD COLUMN IDENTIFIER data_type {
+          auto st = new Statement(); st->type = StmtType::ST_ALTER_ADD_COL;
+          auto alt = std::make_shared<AlterStmt>();
+          alt->table_name = take_str($3);
+          alt->column_name = take_str($6);
+          alt->column_type = take_str($7);
+          st->alter = alt; $$ = st;
+      }
+    | ALTER TABLE IDENTIFIER DROP COLUMN IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_ALTER_DROP_COL;
+          auto alt = std::make_shared<AlterStmt>();
+          alt->table_name = take_str($3);
+          alt->column_name = take_str($6);
+          st->alter = alt; $$ = st;
+      }
+    | ALTER TABLE IDENTIFIER RENAME COLUMN IDENTIFIER TO IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_ALTER_RENAME_COL;
+          auto alt = std::make_shared<AlterStmt>();
+          alt->table_name = take_str($3);
+          alt->column_name = take_str($6);
+          alt->new_name = take_str($8);
+          st->alter = alt; $$ = st;
+      }
+    | ALTER TABLE IDENTIFIER RENAME TO IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_ALTER_RENAME_TBL;
+          auto alt = std::make_shared<AlterStmt>();
+          alt->table_name = take_str($3);
+          alt->new_name = take_str($6);
+          st->alter = alt; $$ = st;
       }
     ;
 

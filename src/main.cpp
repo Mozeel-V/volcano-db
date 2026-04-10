@@ -492,6 +492,180 @@ static void execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 }
                 break;
             }
+            case ast::StmtType::ST_ALTER_ADD_COL: {
+                auto& alt = *stmt->alter;
+                auto* tbl = catalog.get_table(alt.table_name);
+                if (!tbl) { std::cout << "Error: table not found: " << alt.table_name << "\n"; break; }
+
+                // Check column doesn't already exist
+                if (tbl->column_index(alt.column_name) >= 0) {
+                    std::cout << "Error: column '" << alt.column_name << "' already exists in table '" << alt.table_name << "'\n";
+                    break;
+                }
+
+                // Parse data type
+                storage::DataType dt = storage::DataType::VARCHAR;
+                if (alt.column_type == "INT") dt = storage::DataType::INT;
+                else if (alt.column_type == "FLOAT") dt = storage::DataType::FLOAT;
+
+                // Append to schema
+                tbl->schema.push_back({alt.column_name, dt});
+
+                // Add NULL to every existing row
+                for (auto& row : tbl->rows) {
+                    row.push_back(std::monostate{});
+                }
+
+                // Rebuild indexes for this table
+                for (auto& [key, idx] : catalog.indexes) {
+                    if (idx->table_name == alt.table_name) idx->build(*tbl);
+                }
+                for (auto& [key, idx] : catalog.btree_indexes) {
+                    if (idx->table_name == alt.table_name) idx->build(*tbl);
+                }
+
+                std::cout << "Column '" << alt.column_name << "' added to table '" << alt.table_name << "'.\n";
+                break;
+            }
+            case ast::StmtType::ST_ALTER_DROP_COL: {
+                auto& alt = *stmt->alter;
+                auto* tbl = catalog.get_table(alt.table_name);
+                if (!tbl) { std::cout << "Error: table not found: " << alt.table_name << "\n"; break; }
+
+                int col_idx = tbl->column_index(alt.column_name);
+                if (col_idx < 0) {
+                    std::cout << "Error: column '" << alt.column_name << "' not found in table '" << alt.table_name << "'\n";
+                    break;
+                }
+
+                if (tbl->schema.size() <= 1) {
+                    std::cout << "Error: cannot drop the last column of table '" << alt.table_name << "'\n";
+                    break;
+                }
+
+                // Erase from schema
+                tbl->schema.erase(tbl->schema.begin() + col_idx);
+
+                // Erase from every row
+                for (auto& row : tbl->rows) {
+                    if (col_idx < (int)row.size()) {
+                        row.erase(row.begin() + col_idx);
+                    }
+                }
+
+                // Remove any indexes on the dropped column, rebuild remaining
+                std::string drop_key = alt.table_name + "." + alt.column_name;
+                catalog.indexes.erase(drop_key);
+                catalog.btree_indexes.erase(drop_key);
+
+                for (auto& [key, idx] : catalog.indexes) {
+                    if (idx->table_name == alt.table_name) idx->build(*tbl);
+                }
+                for (auto& [key, idx] : catalog.btree_indexes) {
+                    if (idx->table_name == alt.table_name) idx->build(*tbl);
+                }
+
+                std::cout << "Column '" << alt.column_name << "' dropped from table '" << alt.table_name << "'.\n";
+                break;
+            }
+            case ast::StmtType::ST_ALTER_RENAME_COL: {
+                auto& alt = *stmt->alter;
+                auto* tbl = catalog.get_table(alt.table_name);
+                if (!tbl) { std::cout << "Error: table not found: " << alt.table_name << "\n"; break; }
+
+                int col_idx = tbl->column_index(alt.column_name);
+                if (col_idx < 0) {
+                    std::cout << "Error: column '" << alt.column_name << "' not found in table '" << alt.table_name << "'\n";
+                    break;
+                }
+
+                if (tbl->column_index(alt.new_name) >= 0) {
+                    std::cout << "Error: column '" << alt.new_name << "' already exists in table '" << alt.table_name << "'\n";
+                    break;
+                }
+
+                // Update schema
+                tbl->schema[col_idx].name = alt.new_name;
+
+                // Update index column_name fields and re-key index maps
+                std::string old_key = alt.table_name + "." + alt.column_name;
+                std::string new_key = alt.table_name + "." + alt.new_name;
+
+                auto hit = catalog.indexes.find(old_key);
+                if (hit != catalog.indexes.end()) {
+                    hit->second->column_name = alt.new_name;
+                    catalog.indexes[new_key] = hit->second;
+                    catalog.indexes.erase(hit);
+                }
+
+                auto bit = catalog.btree_indexes.find(old_key);
+                if (bit != catalog.btree_indexes.end()) {
+                    bit->second->column_name = alt.new_name;
+                    catalog.btree_indexes[new_key] = bit->second;
+                    catalog.btree_indexes.erase(bit);
+                }
+
+                std::cout << "Column '" << alt.column_name << "' renamed to '" << alt.new_name << "' in table '" << alt.table_name << "'.\n";
+                break;
+            }
+            case ast::StmtType::ST_ALTER_RENAME_TBL: {
+                auto& alt = *stmt->alter;
+                auto it = catalog.tables.find(alt.table_name);
+                if (it == catalog.tables.end()) {
+                    std::cout << "Error: table not found: " << alt.table_name << "\n";
+                    break;
+                }
+
+                if (catalog.tables.find(alt.new_name) != catalog.tables.end()) {
+                    std::cout << "Error: table '" << alt.new_name << "' already exists\n";
+                    break;
+                }
+
+                // Move table to new name
+                auto tbl = it->second;
+                catalog.tables.erase(it);
+                tbl->name = alt.new_name;
+                catalog.tables[alt.new_name] = tbl;
+
+                // Update hash index table_name fields and re-key
+                std::vector<std::pair<std::string, std::shared_ptr<storage::HashIndex>>> h_updates;
+                for (auto hi = catalog.indexes.begin(); hi != catalog.indexes.end(); ) {
+                    if (hi->second->table_name == alt.table_name) {
+                        hi->second->table_name = alt.new_name;
+                        std::string new_key = alt.new_name + "." + hi->second->column_name;
+                        h_updates.emplace_back(new_key, hi->second);
+                        hi = catalog.indexes.erase(hi);
+                    } else {
+                        ++hi;
+                    }
+                }
+                for (auto& [k, v] : h_updates) catalog.indexes[k] = v;
+
+                // Update btree index table_name fields and re-key
+                std::vector<std::pair<std::string, std::shared_ptr<storage::BTreeIndex>>> b_updates;
+                for (auto bi = catalog.btree_indexes.begin(); bi != catalog.btree_indexes.end(); ) {
+                    if (bi->second->table_name == alt.table_name) {
+                        bi->second->table_name = alt.new_name;
+                        std::string new_key = alt.new_name + "." + bi->second->column_name;
+                        b_updates.emplace_back(new_key, bi->second);
+                        bi = catalog.btree_indexes.erase(bi);
+                    } else {
+                        ++bi;
+                    }
+                }
+                for (auto& [k, v] : b_updates) catalog.btree_indexes[k] = v;
+
+                // Update views that reference the old table name
+                auto vi = catalog.views.find(alt.table_name);
+                if (vi != catalog.views.end()) {
+                    auto view_def = vi->second;
+                    catalog.views.erase(vi);
+                    catalog.views[alt.new_name] = view_def;
+                }
+
+                std::cout << "Table '" << alt.table_name << "' renamed to '" << alt.new_name << "'.\n";
+                break;
+            }
         }
     } catch (const std::exception& e) {
         std::cout << "Error: " << e.what() << "\n";
