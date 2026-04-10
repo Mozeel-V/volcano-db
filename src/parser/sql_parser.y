@@ -43,6 +43,18 @@ static void cdlist_push(RawColDefList& l, char* n, char* t) {
     l.names[l.count] = n; l.types[l.count] = t; l.count++;
 }
 
+static RawRowList make_rlist() { RawRowList l = {nullptr,0,0}; return l; }
+static void rlist_push(RawRowList& l, RawExprList row) {
+    if (l.count >= l.cap) { l.cap = l.cap ? l.cap*2 : 4; l.rows = (RawExprList*)realloc(l.rows, l.cap*sizeof(RawExprList)); }
+    l.rows[l.count++] = row;
+}
+
+static RawAssignList make_alist() { RawAssignList l = {nullptr,nullptr,0,0}; return l; }
+static void alist_push(RawAssignList& l, char* col, Expr* val) {
+    if (l.count >= l.cap) { l.cap = l.cap ? l.cap*2 : 4; l.cols = (char**)realloc(l.cols, l.cap*sizeof(char*)); l.vals = (Expr**)realloc(l.vals, l.cap*sizeof(Expr*)); }
+    l.cols[l.count] = col; l.vals[l.count] = val; l.count++;
+}
+
 /* Wrap raw Expr* into ExprPtr (takes ownership) */
 static ExprPtr wrap(Expr* e) { return std::shared_ptr<Expr>(e); }
 static TableRefPtr twrap(TableRef* t) { return std::shared_ptr<TableRef>(t); }
@@ -65,6 +77,8 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
     RawTRefList      tlist;
     RawOrderList     olist;
     RawColDefList    cdlist;
+    RawRowList       rowlist;
+    RawAssignList    assignlist;
     int              ival;
 }
 
@@ -75,6 +89,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %token UNION INTERSECT EXCEPT ALL SOME ANY
 %token WITH CREATE TABLE VIEW MATERIALIZED INDEX USING HASH BTREE
 %token INSERT INTO VALUES LOAD EXPLAIN ANALYZE BENCHMARK_KW
+%token UPDATE SET DELETE_KW
 %token COUNT SUM AVG MIN MAX
 %token TYPE_INT TYPE_FLOAT TYPE_VARCHAR
 %token CASE WHEN THEN ELSE END
@@ -98,6 +113,8 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %type <str_val>   opt_alias data_type agg_name
 %type <ival>      opt_distinct opt_asc_desc join_kind
 %type <int_val>   opt_limit opt_offset
+%type <rowlist>   insert_rows
+%type <assignlist> set_list
 
 %nonassoc UMINUS
 
@@ -167,7 +184,56 @@ statement:
     | INSERT INTO IDENTIFIER VALUES insert_rows {
           auto st = new Statement(); st->type = StmtType::ST_INSERT;
           auto ins = std::make_shared<InsertStmt>();
-          ins->table_name = take_str($3); st->insert = ins; $$ = st;
+          ins->table_name = take_str($3);
+          for (int r = 0; r < $5.count; r++) {
+              std::vector<ExprPtr> row;
+              for (int c = 0; c < $5.rows[r].count; c++) {
+                  row.push_back(wrap($5.rows[r].items[c]));
+              }
+              free($5.rows[r].items);
+              ins->values.push_back(std::move(row));
+          }
+          free($5.rows);
+          st->insert = ins; $$ = st;
+      }
+    | INSERT INTO IDENTIFIER '(' expr_list ')' VALUES insert_rows {
+          auto st = new Statement(); st->type = StmtType::ST_INSERT;
+          auto ins = std::make_shared<InsertStmt>();
+          ins->table_name = take_str($3);
+          for (int i = 0; i < $5.count; i++) {
+              ins->columns.push_back(take_str($5.items[i]->column_name.empty() ?
+                  strdup($5.items[i]->to_string().c_str()) : strdup($5.items[i]->column_name.c_str())));
+              delete $5.items[i];
+          }
+          free($5.items);
+          for (int r = 0; r < $8.count; r++) {
+              std::vector<ExprPtr> row;
+              for (int c = 0; c < $8.rows[r].count; c++) {
+                  row.push_back(wrap($8.rows[r].items[c]));
+              }
+              free($8.rows[r].items);
+              ins->values.push_back(std::move(row));
+          }
+          free($8.rows);
+          st->insert = ins; $$ = st;
+      }
+    | UPDATE IDENTIFIER SET set_list opt_where {
+          auto st = new Statement(); st->type = StmtType::ST_UPDATE;
+          auto upd = std::make_shared<UpdateStmt>();
+          upd->table_name = take_str($2);
+          for (int i = 0; i < $4.count; i++) {
+              upd->assignments.emplace_back(take_str($4.cols[i]), wrap($4.vals[i]));
+          }
+          free($4.cols); free($4.vals);
+          upd->where_clause = wrap($5);
+          st->update = upd; $$ = st;
+      }
+    | DELETE_KW FROM IDENTIFIER opt_where {
+          auto st = new Statement(); st->type = StmtType::ST_DELETE;
+          auto del = std::make_shared<DeleteStmt>();
+          del->table_name = take_str($3);
+          del->where_clause = wrap($4);
+          st->del = del; $$ = st;
       }
     | LOAD IDENTIFIER STRING_LITERAL {
           auto st = new Statement(); st->type = StmtType::ST_LOAD;
@@ -182,8 +248,27 @@ statement:
     ;
 
 insert_rows:
-      '(' expr_list ')' { for(int i=0;i<$2.count;i++) delete $2.items[i]; free($2.items); }
-    | insert_rows ',' '(' expr_list ')' { for(int i=0;i<$4.count;i++) delete $4.items[i]; free($4.items); }
+      '(' expr_list ')' {
+          $$ = make_rlist();
+          RawExprList row = {$2.items, $2.count, $2.cap};
+          rlist_push($$, row);
+      }
+    | insert_rows ',' '(' expr_list ')' {
+          $$ = $1;
+          RawExprList row = {$4.items, $4.count, $4.cap};
+          rlist_push($$, row);
+      }
+    ;
+
+set_list:
+      IDENTIFIER '=' expr {
+          $$ = make_alist();
+          alist_push($$, $1, $3);
+      }
+    | set_list ',' IDENTIFIER '=' expr {
+          $$ = $1;
+          alist_push($$, $3, $5);
+      }
     ;
 
 /* ═══════ SELECT ═══════ */

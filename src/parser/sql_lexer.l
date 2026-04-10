@@ -72,6 +72,9 @@ extern int yylineno;
 "INSERT"            { return INSERT; }
 "INTO"              { return INTO; }
 "VALUES"            { return VALUES; }
+"UPDATE"            { return UPDATE; }
+"SET"               { return SET; }
+"DELETE"            { return DELETE_KW; }
 "LOAD"              { return LOAD; }
 "EXPLAIN"           { return EXPLAIN; }
 "ANALYZE"           { return ANALYZE; }

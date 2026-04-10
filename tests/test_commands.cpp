@@ -48,8 +48,8 @@ TEST_CASE("E2E: Execute SQL via --file", "[e2e][commands]") {
     std::string output = run_cmd("./sqp --file dynamic_test.sql");
 
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 't1' created."));
-    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("INSERT executed"));
-    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(0 rows)")); // INSERT is a stub
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
 
     std::remove("dynamic_test.sql");
 }
@@ -311,4 +311,189 @@ TEST_CASE("E2E: Bare argument treated as script file", "[e2e][commands]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 'bare_t' created."));
 
     std::remove("bare_arg_test.sql");
+}
+
+// ─────────────────────── DML Tests (INSERT/UPDATE/DELETE) ───────────────────────
+
+TEST_CASE("E2E: INSERT single row", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice');\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Alice"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
+}
+
+TEST_CASE("E2E: INSERT multiple rows", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol');\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("3 row(s) inserted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(3 rows)"));
+}
+
+TEST_CASE("E2E: INSERT column count mismatch", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1);\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Column count mismatch"));
+}
+
+TEST_CASE("E2E: INSERT into nonexistent table", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "INSERT INTO ghost VALUES (1, 'x');\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table not found"));
+}
+
+TEST_CASE("E2E: INSERT then SELECT verifies data", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, val FLOAT);\n"
+        "INSERT INTO t VALUES (10, 3.14);\n"
+        "INSERT INTO t VALUES (20, 2.72);\n"
+        "SELECT * FROM t WHERE id = 10;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("3.14"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
+}
+
+TEST_CASE("E2E: DELETE with WHERE", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol');\n"
+        "DELETE FROM t WHERE id = 2;\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) deleted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(2 rows)"));
+}
+
+TEST_CASE("E2E: DELETE without WHERE (truncate)", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob');\n"
+        "DELETE FROM t;\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("2 row(s) deleted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(0 rows)"));
+}
+
+TEST_CASE("E2E: DELETE with compound WHERE", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol');\n"
+        "DELETE FROM t WHERE id > 1 AND id < 3;\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) deleted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(2 rows)"));
+}
+
+TEST_CASE("E2E: UPDATE single column", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob');\n"
+        "UPDATE t SET name = 'UPDATED' WHERE id = 1;\n"
+        "SELECT * FROM t WHERE id = 1;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) updated"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("UPDATED"));
+}
+
+TEST_CASE("E2E: UPDATE without WHERE (all rows)", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob');\n"
+        "UPDATE t SET name = 'ALL';\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("2 row(s) updated"));
+}
+
+TEST_CASE("E2E: UPDATE multiple columns", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR, score INT);\n"
+        "INSERT INTO t VALUES (1, 'Alice', 80), (2, 'Bob', 90);\n"
+        "UPDATE t SET name = 'Carol', score = 100 WHERE id = 2;\n"
+        "SELECT * FROM t WHERE id = 2;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) updated"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Carol"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("100"));
+}
+
+TEST_CASE("E2E: Full DML sequence INSERT->UPDATE->DELETE->SELECT", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol');\n"
+        "UPDATE t SET name = 'Bobby' WHERE id = 2;\n"
+        "DELETE FROM t WHERE id = 3;\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("3 row(s) inserted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) updated"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) deleted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Bobby"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(2 rows)"));
+}
+
+TEST_CASE("E2E: DELETE from nonexistent table", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "DELETE FROM ghost WHERE id = 1;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table not found"));
+}
+
+TEST_CASE("E2E: UPDATE nonexistent table", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "UPDATE ghost SET name = 'x' WHERE id = 1;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table not found"));
+}
+
+TEST_CASE("E2E: DELETE WHERE no rows match", "[e2e][dml]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice');\n"
+        "DELETE FROM t WHERE id = 999;\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("0 row(s) deleted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
 }

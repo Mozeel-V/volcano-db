@@ -184,6 +184,17 @@ struct InsertStmt {
     std::vector<std::vector<ExprPtr>> values;   // rows of values
 };
 
+struct UpdateStmt {
+    std::string table_name;
+    std::vector<std::pair<std::string, ExprPtr>> assignments;  // col = expr pairs
+    ExprPtr where_clause;
+};
+
+struct DeleteStmt {
+    std::string table_name;
+    ExprPtr where_clause;
+};
+
 struct LoadStmt {
     std::string table_name;
     std::string file_path;
@@ -204,6 +215,8 @@ enum class StmtType {
     ST_CREATE_VIEW,
     ST_CREATE_MATERIALIZED_VIEW,
     ST_INSERT,
+    ST_UPDATE,
+    ST_DELETE,
     ST_LOAD,
     ST_EXPLAIN,
     ST_BENCHMARK,
@@ -216,6 +229,8 @@ struct Statement {
     std::shared_ptr<CreateIndexStmt> create_index;
     std::shared_ptr<CreateViewStmt> create_view;
     std::shared_ptr<InsertStmt> insert;
+    std::shared_ptr<UpdateStmt> update;
+    std::shared_ptr<DeleteStmt> del;
     std::shared_ptr<LoadStmt> load;
     bool explain_analyze = false;
 };

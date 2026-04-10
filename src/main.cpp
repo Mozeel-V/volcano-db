@@ -15,6 +15,62 @@
 #include "executor/executor.h"
 #include "executor/view_support.h"
 #include "benchmark/benchmark.h"
+#include <functional>
+
+// ───── DML expression evaluator (for UPDATE/DELETE WHERE clauses) ─────
+static storage::Value dml_eval(const ast::ExprPtr& e, const storage::Table* tbl, const storage::Row& row) {
+    if (!e) return std::monostate{};
+    switch (e->type) {
+        case ast::ExprType::LITERAL_INT:    return e->int_val;
+        case ast::ExprType::LITERAL_FLOAT:  return e->float_val;
+        case ast::ExprType::LITERAL_STRING: return e->str_val;
+        case ast::ExprType::LITERAL_NULL:   return std::monostate{};
+        case ast::ExprType::COLUMN_REF: {
+            int ci = tbl->column_index(e->column_name);
+            if (ci >= 0 && ci < (int)row.size()) return row[ci];
+            return std::monostate{};
+        }
+        case ast::ExprType::BINARY_OP: {
+            auto lv = dml_eval(e->left, tbl, row);
+            auto rv = dml_eval(e->right, tbl, row);
+            switch (e->bin_op) {
+                case ast::BinOp::OP_EQ:  return (int64_t)(storage::value_equal(lv, rv) ? 1 : 0);
+                case ast::BinOp::OP_NEQ: return (int64_t)(storage::value_equal(lv, rv) ? 0 : 1);
+                case ast::BinOp::OP_LT:  return (int64_t)(storage::value_less(lv, rv) ? 1 : 0);
+                case ast::BinOp::OP_GT:  return (int64_t)(storage::value_less(rv, lv) ? 1 : 0);
+                case ast::BinOp::OP_LTE: return (int64_t)((storage::value_less(lv, rv) || storage::value_equal(lv, rv)) ? 1 : 0);
+                case ast::BinOp::OP_GTE: return (int64_t)((storage::value_less(rv, lv) || storage::value_equal(lv, rv)) ? 1 : 0);
+                case ast::BinOp::OP_AND: return (int64_t)((storage::value_to_int(lv) && storage::value_to_int(rv)) ? 1 : 0);
+                case ast::BinOp::OP_OR:  return (int64_t)((storage::value_to_int(lv) || storage::value_to_int(rv)) ? 1 : 0);
+                case ast::BinOp::OP_ADD: return storage::value_add(lv, rv);
+                case ast::BinOp::OP_SUB: return storage::value_sub(lv, rv);
+                case ast::BinOp::OP_MUL: return storage::value_mul(lv, rv);
+                case ast::BinOp::OP_DIV: return storage::value_div(lv, rv);
+                default: return std::monostate{};
+            }
+        }
+        case ast::ExprType::UNARY_OP: {
+            auto ov = dml_eval(e->operand, tbl, row);
+            switch (e->unary_op) {
+                case ast::UnaryOp::OP_NOT: return (int64_t)(storage::value_to_int(ov) ? 0 : 1);
+                case ast::UnaryOp::OP_IS_NULL: return (int64_t)(storage::value_is_null(ov) ? 1 : 0);
+                case ast::UnaryOp::OP_IS_NOT_NULL: return (int64_t)(storage::value_is_null(ov) ? 0 : 1);
+                case ast::UnaryOp::OP_NEG: {
+                    if (storage::value_is_null(ov)) return std::monostate{};
+                    if (std::holds_alternative<int64_t>(ov)) return -std::get<int64_t>(ov);
+                    return -storage::value_to_double(ov);
+                }
+            }
+            return std::monostate{};
+        }
+        default:
+            return std::monostate{};
+    }
+}
+
+static bool dml_eval_bool(const ast::ExprPtr& e, const storage::Table* tbl, const storage::Row& row) {
+    return storage::value_to_int(dml_eval(e, tbl, row)) != 0;
+}
 
 // From Bison-generated parser
 extern int yyparse();
@@ -264,7 +320,102 @@ static void execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 break;
             }
             case ast::StmtType::ST_INSERT: {
-                std::cout << "INSERT executed (simplified — row data not captured in grammar).\n";
+                auto& ins = *stmt->insert;
+                auto* tbl = catalog.get_table(ins.table_name);
+                if (!tbl) { std::cout << "Table not found: " << ins.table_name << "\n"; break; }
+
+                size_t inserted = 0;
+                for (auto& val_exprs : ins.values) {
+                    if (val_exprs.size() != tbl->schema.size()) {
+                        std::cout << "Column count mismatch: expected " << tbl->schema.size()
+                                  << " but got " << val_exprs.size() << "\n";
+                        continue;
+                    }
+                    storage::Row row;
+                    for (auto& e : val_exprs) {
+                        if (!e) { row.push_back(std::monostate{}); continue; }
+                        switch (e->type) {
+                            case ast::ExprType::LITERAL_INT:    row.push_back(e->int_val); break;
+                            case ast::ExprType::LITERAL_FLOAT:  row.push_back(e->float_val); break;
+                            case ast::ExprType::LITERAL_STRING: row.push_back(e->str_val); break;
+                            default:                            row.push_back(std::monostate{}); break;
+                        }
+                    }
+                    tbl->rows.push_back(std::move(row));
+                    catalog.update_indexes_on_insert(ins.table_name, tbl->rows.size() - 1);
+                    inserted++;
+                }
+                std::cout << inserted << " row(s) inserted into '" << ins.table_name << "'.\n";
+                break;
+            }
+            case ast::StmtType::ST_UPDATE: {
+                auto& upd = *stmt->update;
+                auto* tbl = catalog.get_table(upd.table_name);
+                if (!tbl) { std::cout << "Table not found: " << upd.table_name << "\n"; break; }
+
+                // Resolve column indices for assignments
+                std::vector<std::pair<int, ast::ExprPtr>> resolved;
+                for (auto& [col, expr] : upd.assignments) {
+                    int idx = tbl->column_index(col);
+                    if (idx < 0) {
+                        std::cout << "Column not found: " << col << "\n";
+                        break;
+                    }
+                    resolved.emplace_back(idx, expr);
+                }
+                if ((int)resolved.size() != (int)upd.assignments.size()) break;
+
+                size_t updated = 0;
+                for (auto& row : tbl->rows) {
+                    if (upd.where_clause && !dml_eval_bool(upd.where_clause, tbl, row))
+                        continue;
+
+                    // Apply assignments
+                    for (auto& [idx, expr] : resolved) {
+                        row[idx] = dml_eval(expr, tbl, row);
+                    }
+                    updated++;
+                }
+
+                // Rebuild indexes for this table
+                for (auto& [key, idx] : catalog.indexes) {
+                    if (idx->table_name == upd.table_name) idx->build(*tbl);
+                }
+                for (auto& [key, idx] : catalog.btree_indexes) {
+                    if (idx->table_name == upd.table_name) idx->build(*tbl);
+                }
+
+                std::cout << updated << " row(s) updated in '" << upd.table_name << "'.\n";
+                break;
+            }
+            case ast::StmtType::ST_DELETE: {
+                auto& del = *stmt->del;
+                auto* tbl = catalog.get_table(del.table_name);
+                if (!tbl) { std::cout << "Table not found: " << del.table_name << "\n"; break; }
+
+                size_t before = tbl->rows.size();
+                if (!del.where_clause) {
+                    tbl->rows.clear();
+                } else {
+                    tbl->rows.erase(
+                        std::remove_if(tbl->rows.begin(), tbl->rows.end(),
+                            [&](const storage::Row& row) {
+                                return dml_eval_bool(del.where_clause, tbl, row);
+                            }),
+                        tbl->rows.end()
+                    );
+                }
+                size_t deleted = before - tbl->rows.size();
+
+                // Rebuild indexes for this table
+                for (auto& [key, idx] : catalog.indexes) {
+                    if (idx->table_name == del.table_name) idx->build(*tbl);
+                }
+                for (auto& [key, idx] : catalog.btree_indexes) {
+                    if (idx->table_name == del.table_name) idx->build(*tbl);
+                }
+
+                std::cout << deleted << " row(s) deleted from '" << del.table_name << "'.\n";
                 break;
             }
             case ast::StmtType::ST_LOAD: {

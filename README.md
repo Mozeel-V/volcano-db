@@ -267,6 +267,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 44 | Additional Tests | `[planner][optimizer]` | 1 | Generated |
 | 45 | E2E: CLI Commands | `[e2e][commands]` | 22 | `.help`, `.tables` (empty/generated/created), `.schema` (valid/invalid), `.generate` (with/without arg), `.save` (create/overwrite/missing arg), `.benchmark` (empty/loaded), `.quit`, `.exit`, `.source` (valid/missing file/no arg), `--file` (valid/missing/no arg), bare arg as file, unknown command |
 | 46 | Index Integration | `[storage][index]` `[optimizer][index]` `[executor][index]` `[planner][index]` | 17 | BTreeIndex build/lookup/range/insert/string-keys, Catalog hash vs btree routing, index maintenance on insert, optimizer INDEX_SCAN rewrite (equality/range/no-index), executor correctness (hash eq, btree eq/range/lt), index vs full scan equivalence, planner to_string |
+| 47 | DML Operations | `[e2e][dml]` | 15 | INSERT (single/multi-row/mismatch/nonexistent/data-verify), UPDATE (single col/multi col/no WHERE/nonexistent), DELETE (WHERE/no WHERE/compound/no match/nonexistent), full DML sequence |
 
 ### Test Categories Summary
 
@@ -285,6 +286,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | **Benchmarks** | ~8 | Data generation, query correctness on generated data |
 | **CLI Commands** | 22 | All dot commands (`.help`, `.tables`, `.schema`, `.generate`, `.save`, `.benchmark`, `.quit`, `.exit`, `.source`), `--file`, bare arg, unknown command, error handling |
 | **Index Integration** | 17 | BTreeIndex data structure, catalog routing, optimizer rewriting, executor correctness, planner printing |
+| **DML Operations** | 15 | INSERT single/multi-row, UPDATE with SET/WHERE, DELETE with/without WHERE, column mismatch, nonexistent tables, full DML sequence |
 
 ### Features Tested
 
@@ -293,7 +295,9 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 - `SELECT DISTINCT`
 - `CREATE TABLE` (INT, FLOAT, VARCHAR, VARCHAR(n), INTEGER, DOUBLE, TEXT)
 - `CREATE INDEX` (basic B-Tree, USING HASH)
-- `INSERT INTO ... VALUES`
+- `INSERT INTO ... VALUES` (single row, multi-row, with column validation)
+- `UPDATE ... SET ... WHERE` (single/multi column SET, optional WHERE)
+- `DELETE FROM ... WHERE` (with or without WHERE clause)
 - `LOAD table 'file'`
 - `.save <file>` (Save current tables to a formatted text file)
 - `.source <file>` (Execute SQL commands from file)
@@ -378,5 +382,5 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 ### Test Results
 
 - **SQL Tests** (`tests/test_main.cpp`): 246 test cases — 861 assertions — all passing
-- **Command Tests** (`tests/test_commands.cpp`): 22 test cases — 22 assertions — all passing
-- **Total**: 268 test cases — 883 assertions — **all passing**
+- **Command & DML Tests** (`tests/test_commands.cpp`): 37 test cases (22 CLI + 15 DML) — 52 assertions — all passing
+- **Total**: 283 test cases — 913 assertions — **all passing**
