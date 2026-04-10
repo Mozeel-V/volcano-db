@@ -276,6 +276,13 @@ statement:
           alt->new_name = take_str($6);
           st->alter = alt; $$ = st;
       }
+    | RENAME TABLE IDENTIFIER TO IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_ALTER_RENAME_TBL;
+          auto alt = std::make_shared<AlterStmt>();
+          alt->table_name = take_str($3);
+          alt->new_name = take_str($5);
+          st->alter = alt; $$ = st;
+      }
     ;
 
 insert_rows:

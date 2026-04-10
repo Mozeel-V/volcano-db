@@ -190,6 +190,7 @@ ALTER TABLE <table> ADD COLUMN <col_name> <type>;
 ALTER TABLE <table> DROP COLUMN <col_name>;
 ALTER TABLE <table> RENAME COLUMN <old> TO <new>;
 ALTER TABLE <table> RENAME TO <new_table_name>;
+RENAME TABLE <old_name> TO <new_name>;  -- alias for ALTER TABLE ... RENAME TO
 LOAD <table> FROM '<file.csv>';
 
 -- Analysis
@@ -274,7 +275,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 45 | E2E: CLI Commands | `[e2e][commands]` | 22 | `.help`, `.tables` (empty/generated/created), `.schema` (valid/invalid), `.generate` (with/without arg), `.save` (create/overwrite/missing arg), `.benchmark` (empty/loaded), `.quit`, `.exit`, `.source` (valid/missing file/no arg), `--file` (valid/missing/no arg), bare arg as file, unknown command |
 | 46 | Index Integration | `[storage][index]` `[optimizer][index]` `[executor][index]` `[planner][index]` | 17 | BTreeIndex build/lookup/range/insert/string-keys, Catalog hash vs btree routing, index maintenance on insert, optimizer INDEX_SCAN rewrite (equality/range/no-index), executor correctness (hash eq, btree eq/range/lt), index vs full scan equivalence, planner to_string |
 | 47 | DML Operations | `[e2e][dml]` | 15 | INSERT (single/multi-row/mismatch/nonexistent/data-verify), UPDATE (single col/multi col/no WHERE/nonexistent), DELETE (WHERE/no WHERE/compound/no match/nonexistent), full DML sequence |
-| 48 | ALTER TABLE | `[e2e][alter]` | 12 | ADD COLUMN (NULL backfill + new insert), DROP COLUMN (schema+data), RENAME COLUMN (SELECT with new name), RENAME TABLE (success + old name gone), error: duplicate column, nonexistent column, last column, existing table, nonexistent table, rename to existing name, index compatibility |
+| 48 | ALTER TABLE | `[e2e][alter]` | 16 | ADD COLUMN (NULL backfill + new insert), DROP COLUMN (schema+data), RENAME COLUMN (SELECT with new name), RENAME TABLE (success + old name gone), RENAME TABLE standalone (success + old name gone + error cases), error: duplicate column, nonexistent column, last column, existing table, nonexistent table, rename to existing name, index compatibility |
 
 ### Test Categories Summary
 
@@ -294,7 +295,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | **CLI Commands** | 22 | All dot commands (`.help`, `.tables`, `.schema`, `.generate`, `.save`, `.benchmark`, `.quit`, `.exit`, `.source`), `--file`, bare arg, unknown command, error handling |
 | **Index Integration** | 17 | BTreeIndex data structure, catalog routing, optimizer rewriting, executor correctness, planner printing |
 | **DML Operations** | 15 | INSERT single/multi-row, UPDATE with SET/WHERE, DELETE with/without WHERE, column mismatch, nonexistent tables, full DML sequence |
-| **ALTER TABLE** | 12 | ADD COLUMN (NULL backfill), DROP COLUMN (schema+data), RENAME COLUMN, RENAME TABLE, error cases (duplicate, nonexistent, last column, existing table), index compatibility |
+| **ALTER TABLE** | 16 | ADD COLUMN (NULL backfill), DROP COLUMN (schema+data), RENAME COLUMN, RENAME TABLE, RENAME TABLE standalone, error cases (duplicate, nonexistent, last column, existing table), index compatibility |
 
 ### Features Tested
 
@@ -394,5 +395,5 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 ### Test Results
 
 - **SQL Tests** (`tests/test_main.cpp`): 246 test cases — 861 assertions — all passing
-- **Command, DML & ALTER Tests** (`tests/test_commands.cpp`): 49 test cases (22 CLI + 15 DML + 12 ALTER TABLE) — all passing
-- **Total**: 295 test cases — 941 assertions — **all passing**
+- **Command, DML & ALTER Tests** (`tests/test_commands.cpp`): 53 test cases (22 CLI + 15 DML + 16 ALTER TABLE) — all passing
+- **Total**: 299 test cases — **all passing**

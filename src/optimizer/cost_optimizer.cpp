@@ -200,11 +200,10 @@ static LogicalNodePtr rewrite_index_scan(LogicalNodePtr node, storage::Catalog& 
         (pred->bin_op == BinOp::OP_LT || pred->bin_op == BinOp::OP_GT ||
          pred->bin_op == BinOp::OP_LTE || pred->bin_op == BinOp::OP_GTE)) {
         ExprPtr col_expr = nullptr, lit_expr = nullptr;
-        bool col_on_left = false;
         if (pred->left && pred->left->type == ExprType::COLUMN_REF && is_literal(pred->right)) {
-            col_expr = pred->left; lit_expr = pred->right; col_on_left = true;
+            col_expr = pred->left; lit_expr = pred->right;
         } else if (pred->right && pred->right->type == ExprType::COLUMN_REF && is_literal(pred->left)) {
-            col_expr = pred->right; lit_expr = pred->left; col_on_left = false;
+            col_expr = pred->right; lit_expr = pred->left;
         }
         if (col_expr && catalog.get_btree_index(tbl, col_expr->column_name)) {
             auto idx_node = std::make_shared<LogicalNode>();

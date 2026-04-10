@@ -654,3 +654,54 @@ TEST_CASE("E2E: ALTER TABLE with index compatibility", "[e2e][alter]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Alice"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
 }
+
+// ─────────────────────── RENAME TABLE (standalone) Tests ───────────────────────
+
+TEST_CASE("E2E: RENAME TABLE success", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob');\n"
+        "RENAME TABLE t TO people;\n"
+        "SELECT * FROM people;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 't' renamed to 'people'"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Alice"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Bob"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(2 rows)"));
+}
+
+TEST_CASE("E2E: RENAME TABLE old name inaccessible", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT);\n"
+        "INSERT INTO t VALUES (1);\n"
+        "RENAME TABLE t TO t_new;\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 't' renamed to 't_new'"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Error"));
+}
+
+TEST_CASE("E2E: RENAME TABLE to existing name error", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "CREATE TABLE a (id INT);\n"
+        "CREATE TABLE b (id INT);\n"
+        "RENAME TABLE a TO b;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("already exists"));
+}
+
+TEST_CASE("E2E: RENAME TABLE nonexistent table error", "[e2e][alter]") {
+    std::string output = run_interactive(
+        "RENAME TABLE ghost TO other;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("table not found"));
+}
+

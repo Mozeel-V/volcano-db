@@ -54,7 +54,18 @@ add_executable(sqp src/main.cpp ${LIB_SOURCES})
 target_compile_options(sqp PRIVATE -O2 -Wall)
 
 # ───── Tests (Catch2) ─────
-find_package(Catch2 3 REQUIRED)
+# Try system-installed Catch2 first; fall back to downloading if not found
+find_package(Catch2 3 QUIET)
+if(NOT Catch2_FOUND)
+    message(STATUS "Catch2 not found locally, fetching from GitHub...")
+    Include(FetchContent)
+    FetchContent_Declare(
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG        v3.5.2
+    )
+    FetchContent_MakeAvailable(Catch2)
+endif()
 
 add_executable(sqp_tests
     tests/test_main.cpp
