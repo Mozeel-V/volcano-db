@@ -169,6 +169,97 @@ static ExecResult exec_scan(const LogicalNodePtr& node, Catalog& catalog, ExecSt
     return res;
 }
 
+static Value literal_to_value(const ExprPtr& expr) {
+    if (!expr) return std::monostate{};
+    switch (expr->type) {
+        case ExprType::LITERAL_INT:    return expr->int_val;
+        case ExprType::LITERAL_FLOAT:  return expr->float_val;
+        case ExprType::LITERAL_STRING: return expr->str_val;
+        default:                       return std::monostate{};
+    }
+}
+
+static ExecResult exec_index_scan(const LogicalNodePtr& node, Catalog& catalog, ExecStats& stats) {
+    Table* tbl = catalog.get_table(node->table_name);
+    if (!tbl) {
+        std::cerr << "Table not found: " << node->table_name << "\n";
+        return {};
+    }
+
+    ExecResult res;
+    std::string prefix = node->table_alias.empty() ? node->table_name : node->table_alias;
+    for (auto& col : tbl->schema) {
+        res.columns.push_back(prefix + "." + col.name);
+    }
+
+    std::vector<size_t> row_indices;
+
+    if (!node->index_range) {
+        // Equality lookup
+        Value key = literal_to_value(node->index_key);
+
+        // Try hash index first
+        HashIndex* hidx = catalog.get_index(node->table_name, node->index_column);
+        if (hidx) {
+            if (std::holds_alternative<int64_t>(key)) {
+                row_indices = hidx->lookup_int(std::get<int64_t>(key));
+            } else if (std::holds_alternative<std::string>(key)) {
+                row_indices = hidx->lookup_str(std::get<std::string>(key));
+            } else if (std::holds_alternative<double>(key)) {
+                row_indices = hidx->lookup_int((int64_t)std::get<double>(key));
+            }
+        } else {
+            // Try btree
+            BTreeIndex* bidx = catalog.get_btree_index(node->table_name, node->index_column);
+            if (bidx) {
+                row_indices = bidx->lookup_exact(key);
+            }
+        }
+    } else if (node->index_range_low && node->index_range_high) {
+        // BETWEEN range scan
+        BTreeIndex* bidx = catalog.get_btree_index(node->table_name, node->index_column);
+        if (bidx) {
+            Value lo = literal_to_value(node->index_range_low);
+            Value hi = literal_to_value(node->index_range_high);
+            row_indices = bidx->lookup_range(lo, hi);
+        }
+    } else if (node->predicate) {
+        // Range comparison (<, >, <=, >=)
+        BTreeIndex* bidx = catalog.get_btree_index(node->table_name, node->index_column);
+        if (bidx && node->predicate->type == ExprType::BINARY_OP) {
+            // Determine if column is on left or right
+            bool col_on_left = (node->predicate->left &&
+                                node->predicate->left->type == ExprType::COLUMN_REF);
+            Value lit = col_on_left ? literal_to_value(node->predicate->right)
+                                    : literal_to_value(node->predicate->left);
+            BinOp op = node->predicate->bin_op;
+            // If column is on the right, flip the operator
+            if (!col_on_left) {
+                if (op == BinOp::OP_LT) op = BinOp::OP_GT;
+                else if (op == BinOp::OP_GT) op = BinOp::OP_LT;
+                else if (op == BinOp::OP_LTE) op = BinOp::OP_GTE;
+                else if (op == BinOp::OP_GTE) op = BinOp::OP_LTE;
+            }
+            switch (op) {
+                case BinOp::OP_LT:  row_indices = bidx->lookup_lt(lit);  break;
+                case BinOp::OP_GT:  row_indices = bidx->lookup_gt(lit);  break;
+                case BinOp::OP_LTE: row_indices = bidx->lookup_lte(lit); break;
+                case BinOp::OP_GTE: row_indices = bidx->lookup_gte(lit); break;
+                default: break;
+            }
+        }
+    }
+
+    // Collect matching rows
+    for (size_t idx : row_indices) {
+        if (idx < tbl->rows.size()) {
+            res.rows.push_back(tbl->rows[idx]);
+        }
+    }
+    stats.rows_scanned += row_indices.size();
+    return res;
+}
+
 static ExecResult exec_filter(const LogicalNodePtr& node, Catalog& catalog, ExecStats& stats) {
     auto child = exec_node(node->left, catalog, stats);
     EvalCtx ctx;
@@ -489,6 +580,7 @@ static ExecResult exec_node(const LogicalNodePtr& node, Catalog& catalog, ExecSt
     if (!node) return {};
     switch (node->type) {
         case LogicalNodeType::TABLE_SCAN:   return exec_scan(node, catalog, stats);
+        case LogicalNodeType::INDEX_SCAN:    return exec_index_scan(node, catalog, stats);
         case LogicalNodeType::FILTER:       return exec_filter(node, catalog, stats);
         case LogicalNodeType::PROJECTION:   return exec_projection(node, catalog, stats);
         case LogicalNodeType::JOIN:         return exec_join(node, catalog, stats);

@@ -34,13 +34,22 @@ void Catalog::create_index(const std::string& idx_name, const std::string& table
     auto tbl = get_table(table_name);
     if (!tbl) throw std::runtime_error("Table not found: " + table_name);
 
-    auto idx = std::make_shared<HashIndex>();
-    idx->table_name = table_name;
-    idx->column_name = column_name;
-    idx->build(*tbl);
-
     std::string key = table_name + "." + column_name;
-    indexes[key] = idx;
+
+    if (hash) {
+        auto idx = std::make_shared<HashIndex>();
+        idx->table_name = table_name;
+        idx->column_name = column_name;
+        idx->build(*tbl);
+        indexes[key] = idx;
+    } else {
+        auto idx = std::make_shared<BTreeIndex>();
+        idx->table_name = table_name;
+        idx->column_name = column_name;
+        idx->build(*tbl);
+        btree_indexes[key] = idx;
+    }
+
     std::cout << "Index '" << idx_name << "' created on " << table_name
               << "(" << column_name << ") [" << (hash ? "hash" : "btree") << "]\n";
 }
@@ -50,6 +59,54 @@ HashIndex* Catalog::get_index(const std::string& table_name, const std::string& 
     auto it = indexes.find(key);
     if (it == indexes.end()) return nullptr;
     return it->second.get();
+}
+
+BTreeIndex* Catalog::get_btree_index(const std::string& table_name, const std::string& column_name) {
+    std::string key = table_name + "." + column_name;
+    auto it = btree_indexes.find(key);
+    if (it == btree_indexes.end()) return nullptr;
+    return it->second.get();
+}
+
+bool Catalog::has_any_index(const std::string& table_name, const std::string& column_name) {
+    std::string key = table_name + "." + column_name;
+    return indexes.count(key) > 0 || btree_indexes.count(key) > 0;
+}
+
+void Catalog::update_indexes_on_insert(const std::string& table_name, size_t row_idx) {
+    auto tbl = get_table(table_name);
+    if (!tbl || row_idx >= tbl->rows.size()) return;
+
+    const Row& row = tbl->rows[row_idx];
+
+    // Update hash indexes
+    for (auto& [key, idx] : indexes) {
+        if (idx->table_name == table_name) {
+            int col_idx = tbl->column_index(idx->column_name);
+            if (col_idx < 0) continue;
+            const Value& v = row[col_idx];
+            if (value_is_null(v)) continue;
+            if (std::holds_alternative<int64_t>(v)) {
+                idx->int_map[std::get<int64_t>(v)].push_back(row_idx);
+            } else if (std::holds_alternative<std::string>(v)) {
+                idx->str_map[std::get<std::string>(v)].push_back(row_idx);
+            } else if (std::holds_alternative<double>(v)) {
+                idx->int_map[(int64_t)std::get<double>(v)].push_back(row_idx);
+            }
+        }
+    }
+
+    // Update btree indexes
+    for (auto& [key, idx] : btree_indexes) {
+        if (idx->table_name == table_name) {
+            int col_idx = tbl->column_index(idx->column_name);
+            if (col_idx < 0) continue;
+            const Value& v = row[col_idx];
+            if (!value_is_null(v)) {
+                idx->insert_entry(v, row_idx);
+            }
+        }
+    }
 }
 
 size_t Catalog::table_cardinality(const std::string& name) const {

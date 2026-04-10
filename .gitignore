@@ -43,5 +43,4 @@
 # Build output
 build/
 fixes.txt
-compare_tests.py
-tests.md
+changes.md

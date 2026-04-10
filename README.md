@@ -199,8 +199,6 @@ EXPLAIN ANALYZE <query>;
 - **Add persistent storage**: Replace the in-memory `Table::rows` with a disk-backed page structure.
 - **Add new SQL syntax**: Add tokens in [src/parser/sql_lexer.l](src/parser/sql_lexer.l), grammar rules in [src/parser/sql_parser.y](src/parser/sql_parser.y), and corresponding AST nodes in [src/ast/ast.h](src/ast/ast.h).
 
-> **Note on Bison 2.3**: macOS ships with Bison 2.3 which uses `#define` macros for tokens (e.g., `#define AND 262`). All C++ enum values are prefixed (`OP_AND`, `JT_INNER`, `ST_SELECT`, etc.) to avoid collisions. If upgrading to Bison 3.x+, these prefixes are still safe but the collision risk goes away.
-
 ## SQP Test Suite Documentation
 
 Exhaustive test suite for the Simple Query Processor & Optimizer (SQP) using **Catch2 v3**.
@@ -268,6 +266,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 43 | Additional Tests | `[parser][error]` | 2 | Generated | 
 | 44 | Additional Tests | `[planner][optimizer]` | 1 | Generated |
 | 45 | E2E: CLI Commands | `[e2e][commands]` | 22 | `.help`, `.tables` (empty/generated/created), `.schema` (valid/invalid), `.generate` (with/without arg), `.save` (create/overwrite/missing arg), `.benchmark` (empty/loaded), `.quit`, `.exit`, `.source` (valid/missing file/no arg), `--file` (valid/missing/no arg), bare arg as file, unknown command |
+| 46 | Index Integration | `[storage][index]` `[optimizer][index]` `[executor][index]` `[planner][index]` | 17 | BTreeIndex build/lookup/range/insert/string-keys, Catalog hash vs btree routing, index maintenance on insert, optimizer INDEX_SCAN rewrite (equality/range/no-index), executor correctness (hash eq, btree eq/range/lt), index vs full scan equivalence, planner to_string |
 
 ### Test Categories Summary
 
@@ -276,15 +275,16 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | **Parser** | ~60 | All DDL/DML parsing, expression types, clauses, join syntax, EXPLAIN/BENCHMARK |
 | **Case Insensitivity** | 11 | Keywords, aggregate names, JOIN types, ASC/DESC, EXPLAIN, DISTINCT, IS NULL, BETWEEN/LIKE/IN — all mixed case |
 | **Grammar & Punctuation** | 10 | Semicolons, commas, parentheses, dot notation, quotes, operator precedence, comments |
-| **Storage** | ~19 | Value operations (null, arithmetic, comparison), Table CRUD, Catalog, Hash Index |
-| **Planner** | ~8 | Logical plan structure for each node type, to_string |
-| **Optimizer** | ~4 | Rule-based pushdown, cost estimation, hash join selection, result preservation |
+| **Storage** | ~19 | Value operations (null, arithmetic, comparison), Table CRUD, Catalog, Hash Index, B-Tree Index |
+| **Planner** | ~8 | Logical plan structure for each node type, to_string, INDEX_SCAN |
+| **Optimizer** | ~4 | Rule-based pushdown, cost estimation, hash join selection, result preservation, **index scan rewriting** |
 | **Executor** | ~3 | Execution stats tracking |
 | **End-to-End** | ~80+ | Full pipeline (parse→plan→optimize→execute) for SELECT, WHERE, ORDER BY, LIMIT, DISTINCT, aggregation, JOINs, NULLs, subqueries, EXPLAIN, combined patterns |
 | **Edge Cases** | ~13 | Empty tables, single rows, long strings, negative values, NULL-heavy, self-joins, boundary conditions |
 | **Regression** | ~8 | Complex nested logic, boundary BETWEEN, single IN, expression aliases, compound queries |
 | **Benchmarks** | ~8 | Data generation, query correctness on generated data |
 | **CLI Commands** | 22 | All dot commands (`.help`, `.tables`, `.schema`, `.generate`, `.save`, `.benchmark`, `.quit`, `.exit`, `.source`), `--file`, bare arg, unknown command, error handling |
+| **Index Integration** | 17 | BTreeIndex data structure, catalog routing, optimizer rewriting, executor correctness, planner printing |
 
 ### Features Tested
 
@@ -292,7 +292,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 - `SELECT` (with `*`, column list, expressions, aliases)
 - `SELECT DISTINCT`
 - `CREATE TABLE` (INT, FLOAT, VARCHAR, VARCHAR(n), INTEGER, DOUBLE, TEXT)
-- `CREATE INDEX` (basic, USING HASH)
+- `CREATE INDEX` (basic B-Tree, USING HASH)
 - `INSERT INTO ... VALUES`
 - `LOAD table 'file'`
 - `.save <file>` (Save current tables to a formatted text file)
@@ -377,6 +377,6 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 
 ### Test Results
 
-- **SQL Tests** (`tests/test_main.cpp`): 230 test cases — 789 assertions — all passing
-- **Command Tests** (`tests/test_commands.cpp`): 22 test cases — 47 assertions — all passing
-- **Total**: 252 test cases — 836 assertions — all passing
+- **SQL Tests** (`tests/test_main.cpp`): 246 test cases — 861 assertions — all passing
+- **Command Tests** (`tests/test_commands.cpp`): 22 test cases — 22 assertions — all passing
+- **Total**: 268 test cases — 883 assertions — **all passing**

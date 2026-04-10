@@ -5,6 +5,7 @@
 #include <variant>
 #include <memory>
 #include <algorithm>
+#include <map>
 #include <stdexcept>
 #include <fstream>
 #include <sstream>
@@ -66,6 +67,42 @@ public:
     std::vector<size_t> lookup_str(const std::string& key) const;
 };
 
+// ───── B-Tree Index (ordered, supports range queries) ─────
+class BTreeIndex {
+public:
+    std::string table_name;
+    std::string column_name;
+    std::map<Value, std::vector<size_t>> tree;  // ordered map acts as B-tree
+
+    void build(const Table& table);
+    void insert_entry(const Value& key, size_t row_idx);
+
+    // Equality lookup
+    std::vector<size_t> lookup_exact(const Value& key) const;
+    // Range lookup [low, high] inclusive
+    std::vector<size_t> lookup_range(const Value& low, const Value& high) const;
+    // All rows with key < val
+    std::vector<size_t> lookup_lt(const Value& val) const;
+    // All rows with key > val
+    std::vector<size_t> lookup_gt(const Value& val) const;
+    // All rows with key <= val
+    std::vector<size_t> lookup_lte(const Value& val) const;
+    // All rows with key >= val
+    std::vector<size_t> lookup_gte(const Value& val) const;
+};
+
+// ───── Index entry in catalog ─────
+enum class IndexType { HASH, BTREE };
+
+struct IndexEntry {
+    std::string index_name;
+    std::string table_name;
+    std::string column_name;
+    IndexType type;
+    std::shared_ptr<HashIndex> hash_idx;
+    std::shared_ptr<BTreeIndex> btree_idx;
+};
+
 // ───── Catalog ─────
 class Catalog {
 public:
@@ -76,6 +113,7 @@ public:
 
     std::unordered_map<std::string, std::shared_ptr<Table>> tables;
     std::unordered_map<std::string, std::shared_ptr<HashIndex>> indexes; // key: "table.column"
+    std::unordered_map<std::string, std::shared_ptr<BTreeIndex>> btree_indexes; // key: "table.column"
     std::unordered_map<std::string, std::shared_ptr<ViewDef>> views;
 
     void add_table(std::shared_ptr<Table> table);
@@ -86,6 +124,11 @@ public:
     void create_index(const std::string& idx_name, const std::string& table_name,
                       const std::string& column_name, bool hash);
     HashIndex* get_index(const std::string& table_name, const std::string& column_name);
+    BTreeIndex* get_btree_index(const std::string& table_name, const std::string& column_name);
+    bool has_any_index(const std::string& table_name, const std::string& column_name);
+
+    // Index maintenance: update all indexes when a row is inserted
+    void update_indexes_on_insert(const std::string& table_name, size_t row_idx);
 
     // statistics
     size_t table_cardinality(const std::string& name) const;

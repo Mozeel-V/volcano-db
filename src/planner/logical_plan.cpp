@@ -11,6 +11,14 @@ std::string LogicalNode::to_string(int indent) const {
         case LogicalNodeType::TABLE_SCAN:
             s = pad + "SeqScan(" + table_name + ")";
             break;
+        case LogicalNodeType::INDEX_SCAN:
+            s = pad + "IndexScan(" + table_name + "." + index_column;
+            if (index_range)
+                s += " RANGE";
+            else if (index_key)
+                s += " = " + index_key->to_string();
+            s += ")";
+            break;
         case LogicalNodeType::FILTER:
             s = pad + "Filter(" + (predicate ? predicate->to_string() : "?") + ")";
             break;

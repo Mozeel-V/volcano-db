@@ -10,6 +10,7 @@ namespace planner {
 // ───── Logical plan node types ─────
 enum class LogicalNodeType {
     TABLE_SCAN,
+    INDEX_SCAN,
     FILTER,
     PROJECTION,
     JOIN,
@@ -48,6 +49,12 @@ struct LogicalNode {
     int64_t limit_count = -1;
     int64_t offset_count = 0;
     // DISTINCT (no extra fields)
+    // INDEX_SCAN
+    std::string index_column;       // column the index covers
+    ast::ExprPtr index_key;         // literal value for equality lookup
+    bool index_range = false;       // true if this is a range scan (B-tree)
+    ast::ExprPtr index_range_low;   // low bound for range scan
+    ast::ExprPtr index_range_high;  // high bound for range scan
 
     // Children
     std::shared_ptr<LogicalNode> left;

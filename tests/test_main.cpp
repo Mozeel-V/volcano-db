@@ -2480,3 +2480,272 @@ TEST_CASE("Stress: multiple conditions in WHERE", "[e2e][stress]") {
     auto res = run_query(catalog, "SELECT * FROM t WHERE id > 0 AND id < 10 AND name != 'nobody' AND dept != 'nonexistent';");
     CHECK(res.rows.size() == 5);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  INDEX INTEGRATION TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ───── Storage: BTreeIndex ─────
+
+TEST_CASE("BTreeIndex: build and exact lookup", "[storage][index]") {
+    auto tbl = std::make_shared<storage::Table>();
+    tbl->name = "idx_test";
+    tbl->schema = {{"id", storage::DataType::INT}, {"name", storage::DataType::VARCHAR}};
+    tbl->rows.push_back({(int64_t)1, std::string("Alice")});
+    tbl->rows.push_back({(int64_t)2, std::string("Bob")});
+    tbl->rows.push_back({(int64_t)3, std::string("Carol")});
+    tbl->rows.push_back({(int64_t)1, std::string("Dave")});  // duplicate key
+
+    storage::BTreeIndex idx;
+    idx.table_name = "idx_test";
+    idx.column_name = "id";
+    idx.build(*tbl);
+
+    auto r1 = idx.lookup_exact(storage::Value{(int64_t)1});
+    CHECK(r1.size() == 2);  // rows 0 and 3
+    auto r2 = idx.lookup_exact(storage::Value{(int64_t)2});
+    CHECK(r2.size() == 1);
+    auto r3 = idx.lookup_exact(storage::Value{(int64_t)99});
+    CHECK(r3.empty());
+}
+
+TEST_CASE("BTreeIndex: range lookup", "[storage][index]") {
+    auto tbl = std::make_shared<storage::Table>();
+    tbl->name = "range_test";
+    tbl->schema = {{"val", storage::DataType::INT}};
+    for (int i = 1; i <= 10; i++) {
+        tbl->rows.push_back({(int64_t)i});
+    }
+
+    storage::BTreeIndex idx;
+    idx.table_name = "range_test";
+    idx.column_name = "val";
+    idx.build(*tbl);
+
+    // BETWEEN 3 AND 7 → {3,4,5,6,7} = 5 rows
+    auto range = idx.lookup_range(storage::Value{(int64_t)3}, storage::Value{(int64_t)7});
+    CHECK(range.size() == 5);
+
+    // < 4 → {1,2,3} = 3 rows
+    auto lt = idx.lookup_lt(storage::Value{(int64_t)4});
+    CHECK(lt.size() == 3);
+
+    // > 8 → {9,10} = 2 rows
+    auto gt = idx.lookup_gt(storage::Value{(int64_t)8});
+    CHECK(gt.size() == 2);
+
+    // <= 5 → {1,2,3,4,5} = 5 rows
+    auto lte = idx.lookup_lte(storage::Value{(int64_t)5});
+    CHECK(lte.size() == 5);
+
+    // >= 8 → {8,9,10} = 3 rows
+    auto gte = idx.lookup_gte(storage::Value{(int64_t)8});
+    CHECK(gte.size() == 3);
+}
+
+TEST_CASE("BTreeIndex: insert_entry maintains index", "[storage][index]") {
+    storage::BTreeIndex idx;
+    idx.table_name = "t";
+    idx.column_name = "x";
+
+    idx.insert_entry(storage::Value{(int64_t)10}, 0);
+    idx.insert_entry(storage::Value{(int64_t)20}, 1);
+    idx.insert_entry(storage::Value{(int64_t)10}, 2);  // duplicate
+
+    auto r = idx.lookup_exact(storage::Value{(int64_t)10});
+    CHECK(r.size() == 2);
+    CHECK(r[0] == 0);
+    CHECK(r[1] == 2);
+}
+
+TEST_CASE("BTreeIndex: string keys", "[storage][index]") {
+    auto tbl = std::make_shared<storage::Table>();
+    tbl->name = "str_test";
+    tbl->schema = {{"name", storage::DataType::VARCHAR}};
+    tbl->rows.push_back({std::string("Alice")});
+    tbl->rows.push_back({std::string("Bob")});
+    tbl->rows.push_back({std::string("Carol")});
+
+    storage::BTreeIndex idx;
+    idx.table_name = "str_test";
+    idx.column_name = "name";
+    idx.build(*tbl);
+
+    auto r = idx.lookup_exact(storage::Value{std::string("Bob")});
+    CHECK(r.size() == 1);
+    CHECK(r[0] == 1);
+}
+
+// ───── Catalog: create_index routing ─────
+
+TEST_CASE("Catalog: create hash vs btree index", "[storage][index]") {
+    storage::Catalog catalog;
+    auto tbl = std::make_shared<storage::Table>();
+    tbl->name = "t";
+    tbl->schema = {{"id", storage::DataType::INT}};
+    tbl->rows.push_back({(int64_t)1});
+    catalog.add_table(tbl);
+
+    catalog.create_index("idx_hash", "t", "id", true);
+    CHECK(catalog.get_index("t", "id") != nullptr);
+    CHECK(catalog.get_btree_index("t", "id") == nullptr);
+
+    catalog.create_index("idx_btree", "t", "id", false);
+    CHECK(catalog.get_btree_index("t", "id") != nullptr);
+
+    CHECK(catalog.has_any_index("t", "id") == true);
+    CHECK(catalog.has_any_index("t", "nonexistent") == false);
+}
+
+// ───── Catalog: index maintenance on insert ─────
+
+TEST_CASE("Catalog: update_indexes_on_insert", "[storage][index]") {
+    storage::Catalog catalog;
+    auto tbl = std::make_shared<storage::Table>();
+    tbl->name = "t";
+    tbl->schema = {{"id", storage::DataType::INT}};
+    tbl->rows.push_back({(int64_t)1});
+    tbl->rows.push_back({(int64_t)2});
+    catalog.add_table(tbl);
+
+    catalog.create_index("idx", "t", "id", true);
+    auto* hidx = catalog.get_index("t", "id");
+    REQUIRE(hidx != nullptr);
+    CHECK(hidx->lookup_int(1).size() == 1);
+    CHECK(hidx->lookup_int(2).size() == 1);
+
+    // Simulate insertion
+    tbl->rows.push_back({(int64_t)1});
+    catalog.update_indexes_on_insert("t", 2);
+    CHECK(hidx->lookup_int(1).size() == 2);  // now 2 entries for key=1
+}
+
+// ───── Optimizer: INDEX_SCAN rewrite ─────
+
+TEST_CASE("Optimizer: rewrites equality filter to IndexScan", "[optimizer][index]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    catalog.create_index("idx_id", "t", "id", true);  // hash index
+
+    auto stmt = ast::parse_sql("SELECT * FROM t WHERE id = 3;");
+    REQUIRE(stmt != nullptr);
+    auto plan = planner::build_logical_plan(*stmt->select, catalog);
+    auto opt_plan = optimizer::optimize(plan, catalog);
+
+    // The optimized plan should contain an IndexScan node
+    // Walk to find it (it could be under projection)
+    std::string plan_str = opt_plan->to_string();
+    CHECK(plan_str.find("IndexScan") != std::string::npos);
+}
+
+TEST_CASE("Optimizer: no IndexScan without index", "[optimizer][index]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    // No index created
+
+    auto stmt = ast::parse_sql("SELECT * FROM t WHERE id = 3;");
+    REQUIRE(stmt != nullptr);
+    auto plan = planner::build_logical_plan(*stmt->select, catalog);
+    auto opt_plan = optimizer::optimize(plan, catalog);
+
+    std::string plan_str = opt_plan->to_string();
+    CHECK(plan_str.find("IndexScan") == std::string::npos);
+    CHECK(plan_str.find("Filter") != std::string::npos);
+    CHECK(plan_str.find("SeqScan") != std::string::npos);
+}
+
+TEST_CASE("Optimizer: btree range rewrite for greater-than", "[optimizer][index]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    catalog.create_index("idx_id_bt", "t", "id", false);  // btree
+
+    auto stmt = ast::parse_sql("SELECT * FROM t WHERE id > 3;");
+    REQUIRE(stmt != nullptr);
+    auto plan = planner::build_logical_plan(*stmt->select, catalog);
+    auto opt_plan = optimizer::optimize(plan, catalog);
+
+    std::string plan_str = opt_plan->to_string();
+    CHECK(plan_str.find("IndexScan") != std::string::npos);
+    CHECK(plan_str.find("RANGE") != std::string::npos);
+}
+
+// ───── Executor: IndexScan produces correct results ─────
+
+TEST_CASE("Executor: hash index equality returns correct rows", "[executor][index]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    catalog.create_index("idx_id", "t", "id", true);
+
+    auto res = run_query(catalog, "SELECT * FROM t WHERE id = 3;");
+    CHECK(res.rows.size() == 1);
+    CHECK(storage::value_to_int(res.rows[0][0]) == 3);
+}
+
+TEST_CASE("Executor: btree index equality returns correct rows", "[executor][index]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    catalog.create_index("idx_id_bt", "t", "id", false);
+
+    auto res = run_query(catalog, "SELECT * FROM t WHERE id = 2;");
+    CHECK(res.rows.size() == 1);
+    CHECK(storage::value_to_int(res.rows[0][0]) == 2);
+}
+
+TEST_CASE("Executor: btree range query (greater-than)", "[executor][index]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    catalog.create_index("idx_id_bt", "t", "id", false);
+
+    auto res = run_query(catalog, "SELECT * FROM t WHERE id > 3;");
+    CHECK(res.rows.size() == 2);  // ids 4 and 5
+}
+
+TEST_CASE("Executor: btree range query (less-than)", "[executor][index]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    catalog.create_index("idx_id_bt", "t", "id", false);
+
+    auto res = run_query(catalog, "SELECT * FROM t WHERE id < 3;");
+    CHECK(res.rows.size() == 2);  // ids 1 and 2
+}
+
+TEST_CASE("Executor: index vs full scan produce same results", "[executor][index]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+
+    // Run without index first
+    auto res_no_idx = run_query(catalog, "SELECT * FROM t WHERE id = 3;");
+
+    // Now create index and run again
+    catalog.create_index("idx_id", "t", "id", true);
+    auto res_with_idx = run_query(catalog, "SELECT * FROM t WHERE id = 3;");
+
+    // Same results regardless of execution path
+    CHECK(res_no_idx.rows.size() == res_with_idx.rows.size());
+    CHECK(res_no_idx.rows.size() == 1);
+}
+
+// ───── Planner: INDEX_SCAN to_string ─────
+
+TEST_CASE("Planner: IndexScan to_string for equality", "[planner][index]") {
+    auto node = std::make_shared<planner::LogicalNode>();
+    node->type = planner::LogicalNodeType::INDEX_SCAN;
+    node->table_name = "employees";
+    node->index_column = "id";
+    node->index_key = ast::Expr::make_int(42);
+    node->index_range = false;
+
+    std::string s = node->to_string();
+    CHECK(s.find("IndexScan(employees.id = 42)") != std::string::npos);
+}
+
+TEST_CASE("Planner: IndexScan to_string for range", "[planner][index]") {
+    auto node = std::make_shared<planner::LogicalNode>();
+    node->type = planner::LogicalNodeType::INDEX_SCAN;
+    node->table_name = "employees";
+    node->index_column = "salary";
+    node->index_range = true;
+
+    std::string s = node->to_string();
+    CHECK(s.find("IndexScan(employees.salary RANGE)") != std::string::npos);
+}

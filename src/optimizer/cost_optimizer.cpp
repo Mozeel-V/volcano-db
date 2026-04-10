@@ -60,6 +60,19 @@ static void estimate_rows(LogicalNodePtr node, storage::Catalog& catalog) {
             node->estimated_cost = node->estimated_rows;
             break;
         }
+        case LogicalNodeType::INDEX_SCAN: {
+            size_t card = catalog.table_cardinality(node->table_name);
+            if (node->index_range) {
+                // Range scan: ~33% of table
+                node->estimated_rows = std::max(1.0, card * 0.33);
+            } else {
+                // Equality lookup: ~1/NDV of table
+                size_t ndv = catalog.column_distinct(node->table_name, node->index_column);
+                node->estimated_rows = ndv > 0 ? (double)card / ndv : 1.0;
+            }
+            node->estimated_cost = std::max(1.0, std::log2((double)card + 1));
+            break;
+        }
         case LogicalNodeType::FILTER: {
             double input_rows = node->left ? node->left->estimated_rows : 1000;
             std::string tbl = "";
@@ -139,8 +152,97 @@ static void choose_join_algo(LogicalNodePtr node, storage::Catalog& catalog) {
     }
 }
 
+// ───── Rewrite FILTER+TABLE_SCAN → INDEX_SCAN when index exists ─────
+static bool is_literal(const ExprPtr& e) {
+    return e && (e->type == ExprType::LITERAL_INT ||
+                 e->type == ExprType::LITERAL_FLOAT ||
+                 e->type == ExprType::LITERAL_STRING);
+}
+
+static LogicalNodePtr rewrite_index_scan(LogicalNodePtr node, storage::Catalog& catalog) {
+    if (!node) return nullptr;
+    node->left = rewrite_index_scan(node->left, catalog);
+    node->right = rewrite_index_scan(node->right, catalog);
+
+    // Pattern: FILTER over TABLE_SCAN
+    if (node->type != LogicalNodeType::FILTER || !node->left ||
+        node->left->type != LogicalNodeType::TABLE_SCAN)
+        return node;
+
+    auto& scan = node->left;
+    auto& pred = node->predicate;
+    if (!pred) return node;
+
+    std::string tbl = scan->table_name;
+
+    // Case 1: col = literal (equality) — works with hash or btree
+    if (pred->type == ExprType::BINARY_OP && pred->bin_op == BinOp::OP_EQ) {
+        ExprPtr col_expr = nullptr, lit_expr = nullptr;
+        if (pred->left && pred->left->type == ExprType::COLUMN_REF && is_literal(pred->right)) {
+            col_expr = pred->left; lit_expr = pred->right;
+        } else if (pred->right && pred->right->type == ExprType::COLUMN_REF && is_literal(pred->left)) {
+            col_expr = pred->right; lit_expr = pred->left;
+        }
+        if (col_expr && catalog.has_any_index(tbl, col_expr->column_name)) {
+            auto idx_node = std::make_shared<LogicalNode>();
+            idx_node->type = LogicalNodeType::INDEX_SCAN;
+            idx_node->table_name = tbl;
+            idx_node->table_alias = scan->table_alias;
+            idx_node->index_column = col_expr->column_name;
+            idx_node->index_key = lit_expr;
+            idx_node->index_range = false;
+            return idx_node;  // replaces both FILTER and TABLE_SCAN
+        }
+    }
+
+    // Case 2: col < / > / <= / >= literal — btree only
+    if (pred->type == ExprType::BINARY_OP &&
+        (pred->bin_op == BinOp::OP_LT || pred->bin_op == BinOp::OP_GT ||
+         pred->bin_op == BinOp::OP_LTE || pred->bin_op == BinOp::OP_GTE)) {
+        ExprPtr col_expr = nullptr, lit_expr = nullptr;
+        bool col_on_left = false;
+        if (pred->left && pred->left->type == ExprType::COLUMN_REF && is_literal(pred->right)) {
+            col_expr = pred->left; lit_expr = pred->right; col_on_left = true;
+        } else if (pred->right && pred->right->type == ExprType::COLUMN_REF && is_literal(pred->left)) {
+            col_expr = pred->right; lit_expr = pred->left; col_on_left = false;
+        }
+        if (col_expr && catalog.get_btree_index(tbl, col_expr->column_name)) {
+            auto idx_node = std::make_shared<LogicalNode>();
+            idx_node->type = LogicalNodeType::INDEX_SCAN;
+            idx_node->table_name = tbl;
+            idx_node->table_alias = scan->table_alias;
+            idx_node->index_column = col_expr->column_name;
+            idx_node->index_range = true;
+            // Store the predicate so executor knows which range op to use
+            idx_node->predicate = pred;
+            return idx_node;
+        }
+    }
+
+    // Case 3: BETWEEN — btree only
+    if (pred->type == ExprType::BETWEEN_EXPR && pred->operand &&
+        pred->operand->type == ExprType::COLUMN_REF &&
+        is_literal(pred->between_low) && is_literal(pred->between_high)) {
+        std::string col = pred->operand->column_name;
+        if (catalog.get_btree_index(tbl, col)) {
+            auto idx_node = std::make_shared<LogicalNode>();
+            idx_node->type = LogicalNodeType::INDEX_SCAN;
+            idx_node->table_name = tbl;
+            idx_node->table_alias = scan->table_alias;
+            idx_node->index_column = col;
+            idx_node->index_range = true;
+            idx_node->index_range_low = pred->between_low;
+            idx_node->index_range_high = pred->between_high;
+            return idx_node;
+        }
+    }
+
+    return node;
+}
+
 // ───── Cost-based optimizer entry ─────
 LogicalNodePtr optimize_cost(LogicalNodePtr plan, storage::Catalog& catalog) {
+    plan = rewrite_index_scan(plan, catalog);
     estimate_rows(plan, catalog);
     choose_join_algo(plan, catalog);
     // Re-estimate after algorithm choice
