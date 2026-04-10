@@ -64,6 +64,7 @@ FetchContent_MakeAvailable(Catch2)
 
 add_executable(sqp_tests
     tests/test_main.cpp
+    tests/test_commands.cpp
     ${LIB_SOURCES}
 )
 target_link_libraries(sqp_tests PRIVATE Catch2::Catch2WithMain)

@@ -37,8 +37,7 @@ StmtPtr parse_sql(const std::string& sql) {
 static void print_help() {
     std::cout << R"(
 Simple Query Processor — Commands:
-    SQL queries:      SELECT, CREATE TABLE, CREATE INDEX, CREATE VIEW,
-                                        CREATE MATERIALIZED VIEW, INSERT, LOAD
+    SQL queries:      SELECT, CREATE TABLE, CREATE INDEX, CREATE VIEW, CREATE MATERIALIZED VIEW, INSERT, LOAD
   EXPLAIN <query>   Show query plan
   EXPLAIN ANALYZE   Show plan + execution stats
   BENCHMARK <query> Run query with performance profiling
