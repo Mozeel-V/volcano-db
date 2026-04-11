@@ -90,7 +90,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %token WITH CREATE TABLE VIEW MATERIALIZED INDEX USING HASH BTREE
 %token INSERT INTO VALUES LOAD EXPLAIN ANALYZE BENCHMARK_KW
 %token UPDATE SET DELETE_KW
-%token ALTER ADD COLUMN RENAME TO DROP
+%token ALTER ADD COLUMN RENAME TO DROP TRUNCATE_KW
 %token COUNT SUM AVG MIN MAX
 %token TYPE_INT TYPE_FLOAT TYPE_VARCHAR
 %token CASE WHEN THEN ELSE END
@@ -282,6 +282,26 @@ statement:
           alt->table_name = take_str($3);
           alt->new_name = take_str($5);
           st->alter = alt; $$ = st;
+      }
+    | DROP TABLE IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_DROP_TABLE;
+          st->drop_name = take_str($3); $$ = st;
+      }
+    | DROP INDEX IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_DROP_INDEX;
+          st->drop_name = take_str($3); $$ = st;
+      }
+    | DROP VIEW IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_DROP_VIEW;
+          st->drop_name = take_str($3); $$ = st;
+      }
+    | TRUNCATE_KW TABLE IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_TRUNCATE;
+          st->drop_name = take_str($3); $$ = st;
+      }
+    | TRUNCATE_KW IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_TRUNCATE;
+          st->drop_name = take_str($2); $$ = st;
       }
     ;
 

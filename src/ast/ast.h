@@ -231,6 +231,10 @@ enum class StmtType {
     ST_ALTER_DROP_COL,
     ST_ALTER_RENAME_COL,
     ST_ALTER_RENAME_TBL,
+    ST_DROP_TABLE,
+    ST_DROP_INDEX,
+    ST_DROP_VIEW,
+    ST_TRUNCATE,
 };
 
 struct Statement {
@@ -244,6 +248,7 @@ struct Statement {
     std::shared_ptr<DeleteStmt> del;
     std::shared_ptr<LoadStmt> load;
     std::shared_ptr<AlterStmt> alter;
+    std::string drop_name;  // name of table/index/view to drop, or table to truncate
     bool explain_analyze = false;
 };
 

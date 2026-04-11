@@ -103,6 +103,7 @@ extern int yylineno;
 "RENAME"            { return RENAME; }
 "TO"                { return TO; }
 "DROP"              { return DROP; }
+"TRUNCATE"          { return TRUNCATE_KW; }
 
     /* ── Operators ── */
 "<="                { return LEQ; }

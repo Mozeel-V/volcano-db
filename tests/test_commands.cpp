@@ -705,3 +705,136 @@ TEST_CASE("E2E: RENAME TABLE nonexistent table error", "[e2e][alter]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("table not found"));
 }
 
+// ─────────────────────── DROP TABLE Tests ───────────────────────
+
+TEST_CASE("E2E: DROP TABLE success", "[e2e][ddl]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob');\n"
+        "DROP TABLE t;\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 't' dropped."));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Error"));
+}
+
+TEST_CASE("E2E: DROP TABLE nonexistent", "[e2e][ddl]") {
+    std::string output = run_interactive(
+        "DROP TABLE ghost_table;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table not found: ghost_table"));
+}
+
+TEST_CASE("E2E: DROP TABLE cascades index removal", "[e2e][ddl]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, val INT);\n"
+        "INSERT INTO t VALUES (1, 100), (2, 200);\n"
+        "CREATE INDEX idx_val ON t (val);\n"
+        "DROP TABLE t;\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 't' dropped."));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Error"));
+}
+
+// ─────────────────────── DROP VIEW Tests ───────────────────────
+
+TEST_CASE("E2E: DROP VIEW success", "[e2e][ddl]") {
+    std::string output = run_interactive(
+        "CREATE TABLE v_base (id INT, name VARCHAR);\n"
+        "INSERT INTO v_base VALUES (1, 'Alice');\n"
+        "CREATE VIEW my_view AS SELECT * FROM v_base;\n"
+        "DROP VIEW my_view;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("View 'my_view' dropped."));
+}
+
+TEST_CASE("E2E: DROP VIEW nonexistent", "[e2e][ddl]") {
+    std::string output = run_interactive(
+        "DROP VIEW no_such_view;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("View not found: no_such_view"));
+}
+
+// ─────────────────────── DROP INDEX Tests ───────────────────────
+
+TEST_CASE("E2E: DROP INDEX nonexistent", "[e2e][ddl]") {
+    std::string output = run_interactive(
+        "DROP INDEX fake_index;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Index not found: fake_index"));
+}
+
+// ─────────────────────── TRUNCATE Tests ───────────────────────
+
+TEST_CASE("E2E: TRUNCATE TABLE clears rows and table persists", "[e2e][ddl]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT, name VARCHAR);\n"
+        "INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol');\n"
+        "TRUNCATE TABLE t;\n"
+        "SELECT * FROM t;\n"
+        "INSERT INTO t VALUES (10, 'New');\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("truncated (3 rows removed)"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(0 rows)"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("New"));
+}
+
+TEST_CASE("E2E: TRUNCATE shorthand (no TABLE keyword)", "[e2e][ddl]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (x INT);\n"
+        "INSERT INTO t VALUES (1), (2), (3);\n"
+        "TRUNCATE t;\n"
+        "SELECT * FROM t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("truncated (3 rows removed)"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(0 rows)"));
+}
+
+TEST_CASE("E2E: TRUNCATE empty table", "[e2e][ddl]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT);\n"
+        "TRUNCATE TABLE t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("truncated (0 rows removed)"));
+}
+
+TEST_CASE("E2E: TRUNCATE nonexistent table", "[e2e][ddl]") {
+    std::string output = run_interactive(
+        "TRUNCATE TABLE ghost;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table not found: ghost"));
+}
+
+TEST_CASE("E2E: TRUNCATE case insensitivity", "[e2e][ddl]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t (id INT);\n"
+        "INSERT INTO t VALUES (1), (2);\n"
+        "truncate table t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("truncated (2 rows removed)"));
+}

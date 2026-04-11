@@ -130,6 +130,10 @@ public:
     // Index maintenance: update all indexes when a row is inserted
     void update_indexes_on_insert(const std::string& table_name, size_t row_idx);
 
+    // Drop helpers
+    void remove_indexes_for_table(const std::string& table_name);
+    bool drop_index_by_name(const std::string& index_name);
+
     // statistics
     size_t table_cardinality(const std::string& name) const;
     size_t column_distinct(const std::string& table, const std::string& col) const;

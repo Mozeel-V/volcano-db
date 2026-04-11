@@ -152,7 +152,7 @@ src/
 
 ### Key components
 
-**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, `LOAD`, `EXPLAIN`, and `BENCHMARK`.
+**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, `DROP TABLE/INDEX/VIEW`, `TRUNCATE`, `LOAD`, `EXPLAIN`, and `BENCHMARK`.
 
 **AST** (`ast::Expr`, `ast::SelectStmt`, `ast::Statement`) — Tree representation of parsed SQL. Expressions cover column refs, literals, binary/unary ops, function calls (aggregates), subqueries, `IN`, `BETWEEN`, `LIKE`, `CASE`.
 
@@ -191,6 +191,11 @@ ALTER TABLE <table> DROP COLUMN <col_name>;
 ALTER TABLE <table> RENAME COLUMN <old> TO <new>;
 ALTER TABLE <table> RENAME TO <new_table_name>;
 RENAME TABLE <old_name> TO <new_name>;  -- alias for ALTER TABLE ... RENAME TO
+DROP TABLE <table_name>;
+DROP INDEX <index_name>;
+DROP VIEW <view_name>;
+TRUNCATE TABLE <table_name>;
+TRUNCATE <table_name>;                  -- shorthand (without TABLE keyword)
 LOAD <table> FROM '<file.csv>';
 
 -- Analysis
@@ -276,6 +281,8 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 46 | Index Integration | `[storage][index]` `[optimizer][index]` `[executor][index]` `[planner][index]` | 17 | BTreeIndex build/lookup/range/insert/string-keys, Catalog hash vs btree routing, index maintenance on insert, optimizer INDEX_SCAN rewrite (equality/range/no-index), executor correctness (hash eq, btree eq/range/lt), index vs full scan equivalence, planner to_string |
 | 47 | DML Operations | `[e2e][dml]` | 15 | INSERT (single/multi-row/mismatch/nonexistent/data-verify), UPDATE (single col/multi col/no WHERE/nonexistent), DELETE (WHERE/no WHERE/compound/no match/nonexistent), full DML sequence |
 | 48 | ALTER TABLE | `[e2e][alter]` | 16 | ADD COLUMN (NULL backfill + new insert), DROP COLUMN (schema+data), RENAME COLUMN (SELECT with new name), RENAME TABLE (success + old name gone), RENAME TABLE standalone (success + old name gone + error cases), error: duplicate column, nonexistent column, last column, existing table, nonexistent table, rename to existing name, index compatibility |
+| 49 | DROP TABLE/INDEX/VIEW | `[e2e][ddl]` | 6 | DROP TABLE (success + nonexistent error + index cascade), DROP INDEX (success + nonexistent), DROP VIEW (success + create+drop+verify gone + nonexistent) |
+| 50 | TRUNCATE | `[e2e][ddl]` | 5 | TRUNCATE TABLE (clears rows, table persists, insert after), TRUNCATE shorthand, TRUNCATE empty table, TRUNCATE nonexistent error, case insensitivity |
 
 ### Test Categories Summary
 
@@ -296,6 +303,8 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | **Index Integration** | 17 | BTreeIndex data structure, catalog routing, optimizer rewriting, executor correctness, planner printing |
 | **DML Operations** | 15 | INSERT single/multi-row, UPDATE with SET/WHERE, DELETE with/without WHERE, column mismatch, nonexistent tables, full DML sequence |
 | **ALTER TABLE** | 16 | ADD COLUMN (NULL backfill), DROP COLUMN (schema+data), RENAME COLUMN, RENAME TABLE, RENAME TABLE standalone, error cases (duplicate, nonexistent, last column, existing table), index compatibility |
+| **DROP** | 6 | DROP TABLE (success, nonexistent, index cascade), DROP INDEX (success, nonexistent), DROP VIEW (success, nonexistent) |
+| **TRUNCATE** | 5 | TRUNCATE TABLE (rows cleared, table persists), shorthand syntax, empty table, nonexistent table, case insensitivity |
 
 ### Features Tested
 
@@ -311,6 +320,11 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 - `ALTER TABLE ... DROP COLUMN` (validates not last column)
 - `ALTER TABLE ... RENAME COLUMN ... TO` (updates indexes)
 - `ALTER TABLE ... RENAME TO` (updates indexes and views)
+- `DROP TABLE <name>` (cascades index removal)
+- `DROP INDEX <name>`
+- `DROP VIEW <name>`
+- `TRUNCATE TABLE <name>` (clears rows, preserves table structure)
+- `TRUNCATE <name>` (shorthand without TABLE keyword)
 - `LOAD table 'file'`
 - `.save <file>` (Save current tables to a formatted text file)
 - `.source <file>` (Execute SQL commands from file)
@@ -395,5 +409,5 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 ### Test Results
 
 - **SQL Tests** (`tests/test_main.cpp`): 246 test cases — 861 assertions — all passing
-- **Command, DML & ALTER Tests** (`tests/test_commands.cpp`): 53 test cases (22 CLI + 15 DML + 16 ALTER TABLE) — all passing
-- **Total**: 299 test cases — **all passing**
+- **Command, DML, ALTER, DROP & TRUNCATE Tests** (`tests/test_commands.cpp`): 64 test cases (22 CLI + 15 DML + 16 ALTER TABLE + 6 DROP + 5 TRUNCATE) — all passing
+- **Total**: 310 test cases — **all passing**

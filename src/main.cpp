@@ -666,6 +666,44 @@ static void execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 std::cout << "Table '" << alt.table_name << "' renamed to '" << alt.new_name << "'.\n";
                 break;
             }
+            case ast::StmtType::ST_DROP_TABLE: {
+                if (!catalog.get_table(stmt->drop_name)) {
+                    std::cout << "Table not found: " << stmt->drop_name << "\n"; break;
+                }
+                // Remove all indexes on this table
+                catalog.remove_indexes_for_table(stmt->drop_name);
+                // Remove any views associated with this table
+                catalog.views.erase(stmt->drop_name);
+                catalog.tables.erase(stmt->drop_name);
+                std::cout << "Table '" << stmt->drop_name << "' dropped.\n";
+                break;
+            }
+            case ast::StmtType::ST_DROP_INDEX: {
+                bool found = catalog.drop_index_by_name(stmt->drop_name);
+                if (!found) std::cout << "Index not found: " << stmt->drop_name << "\n";
+                else std::cout << "Index '" << stmt->drop_name << "' dropped.\n";
+                break;
+            }
+            case ast::StmtType::ST_DROP_VIEW: {
+                if (catalog.views.erase(stmt->drop_name) == 0)
+                    std::cout << "View not found: " << stmt->drop_name << "\n";
+                else
+                    std::cout << "View '" << stmt->drop_name << "' dropped.\n";
+                break;
+            }
+            case ast::StmtType::ST_TRUNCATE: {
+                auto* tbl = catalog.get_table(stmt->drop_name);
+                if (!tbl) { std::cout << "Table not found: " << stmt->drop_name << "\n"; break; }
+                size_t count = tbl->rows.size();
+                tbl->rows.clear();
+                // Rebuild (clear) indexes
+                for (auto& [key, idx] : catalog.indexes)
+                    if (idx->table_name == stmt->drop_name) idx->build(*tbl);
+                for (auto& [key, idx] : catalog.btree_indexes)
+                    if (idx->table_name == stmt->drop_name) idx->build(*tbl);
+                std::cout << "Table '" << stmt->drop_name << "' truncated (" << count << " rows removed).\n";
+                break;
+            }
         }
     } catch (const std::exception& e) {
         std::cout << "Error: " << e.what() << "\n";

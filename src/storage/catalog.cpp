@@ -109,6 +109,65 @@ void Catalog::update_indexes_on_insert(const std::string& table_name, size_t row
     }
 }
 
+void Catalog::remove_indexes_for_table(const std::string& table_name) {
+    for (auto it = indexes.begin(); it != indexes.end(); ) {
+        if (it->second->table_name == table_name)
+            it = indexes.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = btree_indexes.begin(); it != btree_indexes.end(); ) {
+        if (it->second->table_name == table_name)
+            it = btree_indexes.erase(it);
+        else
+            ++it;
+    }
+}
+
+bool Catalog::drop_index_by_name(const std::string& index_name) {
+    // Search hash indexes by comparing the index_name stored in the key or the index itself
+    // Index keys are "table.column", but we need to find by the user-specified index name.
+    // Since the catalog doesn't store index_name, we search by key pattern.
+    // Actually, let's search by matching the key: the index_name given at CREATE INDEX
+    // is not stored in HashIndex/BTreeIndex — we need to match against the map key.
+    // The standard key format is "table.column". The user may use the original index name.
+    // For simplicity, match against the key directly.
+    
+    // Try hash indexes
+    for (auto it = indexes.begin(); it != indexes.end(); ++it) {
+        // The key format is "table.column" — try matching index_name against the key
+        if (it->first == index_name) {
+            indexes.erase(it);
+            return true;
+        }
+    }
+    // Try btree indexes
+    for (auto it = btree_indexes.begin(); it != btree_indexes.end(); ++it) {
+        if (it->first == index_name) {
+            btree_indexes.erase(it);
+            return true;
+        }
+    }
+    
+    // Also try matching as "table.column" pattern for any key containing the index name
+    // Since indexes are keyed by "table.column" but created with a user-given name,
+    // let's also check all entries
+    for (auto it = indexes.begin(); it != indexes.end(); ++it) {
+        if (it->first.find(index_name) != std::string::npos) {
+            indexes.erase(it);
+            return true;
+        }
+    }
+    for (auto it = btree_indexes.begin(); it != btree_indexes.end(); ++it) {
+        if (it->first.find(index_name) != std::string::npos) {
+            btree_indexes.erase(it);
+            return true;
+        }
+    }
+    
+    return false;
+}
+
 size_t Catalog::table_cardinality(const std::string& name) const {
     auto it = tables.find(name);
     if (it == tables.end()) return 0;
