@@ -104,6 +104,8 @@ SELECT dept, COUNT(*) FROM employees GROUP BY dept;
 | `.generate <n>` | Generate sample data with n employee rows |
 | `.save <file>` | Save all current tables to a formatted text file (creates or overwrites) |
 | `.source <file>` | Execute SQL commands from a file |
+| `.plan` | Show last EXPLAIN plan (tree format) |
+| `.plan dot` | Show last EXPLAIN plan (Graphviz DOT format) |
 | `.benchmark` | Run benchmark suite (optimized vs unoptimized) |
 | `.quit` / `.exit` | Exit |
 
@@ -291,26 +293,15 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 
 | Category | Tests | Coverage |
 |----------|------:|----------|
-| Parser | 60 | DDL/DML parsing, expressions, clauses, joins, EXPLAIN/BENCHMARK |
-| Case Insensitivity | 11 | Keywords, aggregates, JOINs, ASC/DESC, DISTINCT, IS NULL, BETWEEN/LIKE/IN |
-| Grammar & Punctuation | 10 | Semicolons, commas, parens, dot notation, quotes, operator precedence, comments |
-| Storage | 19 | Value ops, Table CRUD, Catalog, Hash Index, B-Tree Index |
-| Planner | 8 | Logical plan nodes, to_string, INDEX_SCAN |
-| Optimizer | 4 | Pushdown, cost estimation, hash join, index scan rewriting |
-| Executor | 3 | Execution stats tracking |
-| End-to-End | 80+ | Full pipeline for SELECT, WHERE, ORDER BY, LIMIT, DISTINCT, aggregation, JOINs, subqueries |
-| Edge Cases | 13 | Empty tables, NULLs, long strings, negatives, self-joins, boundaries |
-| Regression | 8 | Nested logic, boundary BETWEEN, expression aliases, compound queries |
-| Benchmarks | 8 | Data generation, query correctness |
-| CLI Commands | 22 | Dot commands, `--file`, bare arg, unknown command, error handling |
-| Index Integration | 17 | BTreeIndex, catalog routing, optimizer rewriting, executor correctness |
-| DML Operations | 15 | INSERT/UPDATE/DELETE single/multi-row, column mismatch, nonexistent tables |
-| ALTER TABLE | 16 | ADD/DROP/RENAME COLUMN, RENAME TABLE, error cases, index compat |
-| DROP | 6 | DROP TABLE/INDEX/VIEW (success + nonexistent + cascade) |
-| TRUNCATE | 5 | TRUNCATE TABLE/shorthand, empty/nonexistent table, case insensitivity |
-| Error-Stop | 3 | `--file` stops on error, interactive REPL continues |
-| MERGE | 5 | Upsert, update-only, insert-only, error, case insensitivity |
-| Query Plan Viz | 4 | Tree connectors, per-node stats, DOT export, `.plan` command |
+| Parsing & Grammar | 81 | SQL parsing, case insensitivity, punctuation, operator precedence, comments |
+| Storage & Indexes | 36 | Value ops, Table CRUD, Catalog, Hash/BTree indexes, integration |
+| Query Pipeline | 15 | Planner nodes, optimizer rules, executor stats |
+| End-to-End & Regression | 101 | Full pipeline, edge cases, regression, benchmarks |
+| CLI & Script Execution | 25 | Dot commands, `--file`, `.source`, error-stop behavior |
+| DML Operations | 20 | INSERT/UPDATE/DELETE, MERGE (upsert, update-only, insert-only) |
+| DDL Operations | 27 | ALTER TABLE, DROP TABLE/INDEX/VIEW, TRUNCATE |
+| Query Plan Visualization | 4 | EXPLAIN tree connectors, per-node stats, DOT export, `.plan` |
+| **Total** | **322** | **1004 assertions — all passing** |
 
 ### Features Tested
 
