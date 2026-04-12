@@ -26,6 +26,12 @@ static storage::Value dml_eval(const ast::ExprPtr& e, const storage::Table* tbl,
         case ast::ExprType::LITERAL_STRING: return e->str_val;
         case ast::ExprType::LITERAL_NULL:   return std::monostate{};
         case ast::ExprType::COLUMN_REF: {
+            // Try qualified name first (for MERGE combined tables: "target.id")
+            if (!e->table_name.empty()) {
+                int ci = tbl->column_index(e->table_name + "." + e->column_name);
+                if (ci >= 0 && ci < (int)row.size()) return row[ci];
+            }
+            // Fall back to unqualified name
             int ci = tbl->column_index(e->column_name);
             if (ci >= 0 && ci < (int)row.size()) return row[ci];
             return std::monostate{};
@@ -699,6 +705,85 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 for (auto& [key, idx] : catalog.btree_indexes)
                     if (idx->table_name == stmt->drop_name) idx->build(*tbl);
                 std::cout << "Table '" << stmt->drop_name << "' truncated (" << count << " rows removed).\n";
+                break;
+            }
+            case ast::StmtType::ST_MERGE: {
+                auto& mg = *stmt->merge;
+                auto* target = catalog.get_table(mg.target_table);
+                if (!target) throw std::runtime_error("Target table not found: " + mg.target_table);
+                auto* source = catalog.get_table(mg.source_table);
+                if (!source) throw std::runtime_error("Source table not found: " + mg.source_table);
+
+                // Resolve SET column indices on the target table
+                std::vector<std::pair<int, ast::ExprPtr>> resolved_set;
+                for (auto& [col, expr] : mg.update_assignments) {
+                    int idx = target->column_index(col);
+                    if (idx < 0) throw std::runtime_error("Column not found in target: " + col);
+                    resolved_set.emplace_back(idx, expr);
+                }
+
+                // Build a combined virtual table for ON condition evaluation
+                // Schema: [target.col1, target.col2, ..., source.col1, source.col2, ...]
+                storage::Table combined;
+                for (auto& cd : target->schema)
+                    combined.schema.push_back({mg.target_table + "." + cd.name, cd.type});
+                for (auto& cd : source->schema)
+                    combined.schema.push_back({mg.source_table + "." + cd.name, cd.type});
+
+                size_t updated = 0, inserted = 0;
+                size_t orig_target_size = target->rows.size();
+
+                for (auto& src_row : source->rows) {
+                    bool matched = false;
+                    // Only check against original target rows (not newly inserted ones)
+                    for (size_t ti = 0; ti < orig_target_size; ti++) {
+                        auto& tgt_row = target->rows[ti];
+                        // Build combined row: [target values..., source values...]
+                        storage::Row combo;
+                        combo.insert(combo.end(), tgt_row.begin(), tgt_row.end());
+                        combo.insert(combo.end(), src_row.begin(), src_row.end());
+
+                        if (mg.on_condition && dml_eval_bool(mg.on_condition, &combined, combo)) {
+                            // WHEN MATCHED → UPDATE the target row
+                            for (auto& [idx, expr] : resolved_set) {
+                                tgt_row[idx] = dml_eval(expr, source, src_row);
+                            }
+                            matched = true;
+                            updated++;
+                            break;
+                        }
+                    }
+
+                    if (!matched) {
+                        // WHEN NOT MATCHED → INSERT into target
+                        if (mg.insert_values.empty()) continue;
+                        auto& val_exprs = mg.insert_values[0];
+                        if (val_exprs.size() != target->schema.size()) {
+                            throw std::runtime_error("MERGE INSERT column count mismatch: expected " +
+                                std::to_string(target->schema.size()) + " but got " + std::to_string(val_exprs.size()));
+                        }
+                        storage::Row new_row;
+                        for (auto& e : val_exprs) {
+                            new_row.push_back(dml_eval(e, source, src_row));
+                        }
+                        target->rows.push_back(std::move(new_row));
+                        catalog.update_indexes_on_insert(mg.target_table, target->rows.size() - 1);
+                        inserted++;
+                    }
+                }
+
+                // Rebuild indexes on target if rows were updated
+                if (updated > 0) {
+                    for (auto& [key, idx] : catalog.indexes) {
+                        if (idx->table_name == mg.target_table) idx->build(*target);
+                    }
+                    for (auto& [key, idx] : catalog.btree_indexes) {
+                        if (idx->table_name == mg.target_table) idx->build(*target);
+                    }
+                }
+
+                std::cout << "MERGE into '" << mg.target_table << "': "
+                          << updated << " row(s) updated, " << inserted << " row(s) inserted.\n";
                 break;
             }
         }

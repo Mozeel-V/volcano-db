@@ -91,6 +91,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %token INSERT INTO VALUES LOAD EXPLAIN ANALYZE BENCHMARK_KW
 %token UPDATE SET DELETE_KW
 %token ALTER ADD COLUMN RENAME TO DROP TRUNCATE_KW
+%token MERGE MATCHED
 %token COUNT SUM AVG MIN MAX
 %token TYPE_INT TYPE_FLOAT TYPE_VARCHAR
 %token CASE WHEN THEN ELSE END
@@ -302,6 +303,31 @@ statement:
     | TRUNCATE_KW IDENTIFIER {
           auto st = new Statement(); st->type = StmtType::ST_TRUNCATE;
           st->drop_name = take_str($2); $$ = st;
+      }
+    | MERGE INTO IDENTIFIER USING IDENTIFIER ON expr
+      WHEN MATCHED THEN UPDATE SET set_list
+      WHEN NOT MATCHED THEN INSERT VALUES insert_rows {
+          auto st = new Statement(); st->type = StmtType::ST_MERGE;
+          auto mg = std::make_shared<MergeStmt>();
+          mg->target_table = take_str($3);
+          mg->source_table = take_str($5);
+          mg->on_condition = wrap($7);
+          /* WHEN MATCHED → SET assignments ($13) */
+          for (int i = 0; i < $13.count; i++) {
+              mg->update_assignments.emplace_back(take_str($13.cols[i]), wrap($13.vals[i]));
+          }
+          free($13.cols); free($13.vals);
+          /* WHEN NOT MATCHED → INSERT VALUES ($20) */
+          for (int r = 0; r < $20.count; r++) {
+              std::vector<ExprPtr> row;
+              for (int c = 0; c < $20.rows[r].count; c++) {
+                  row.push_back(wrap($20.rows[r].items[c]));
+              }
+              free($20.rows[r].items);
+              mg->insert_values.push_back(std::move(row));
+          }
+          free($20.rows);
+          st->merge = mg; $$ = st;
       }
     ;
 

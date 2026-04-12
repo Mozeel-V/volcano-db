@@ -284,6 +284,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 49 | DROP TABLE/INDEX/VIEW | `[e2e][ddl]` | 6 | DROP TABLE (success + nonexistent error + index cascade), DROP INDEX (success + nonexistent), DROP VIEW (success + create+drop+verify gone + nonexistent) |
 | 50 | TRUNCATE | `[e2e][ddl]` | 5 | TRUNCATE TABLE (clears rows, table persists, insert after), TRUNCATE shorthand, TRUNCATE empty table, TRUNCATE nonexistent error, case insensitivity |
 | 51 | Script Error-Stop | `[e2e][error-stop]` | 3 | `--file` stops on syntax error (earlier commands execute, later don't), interactive REPL continues after error, `--file` stops on runtime error (nonexistent table) |
+| 52 | MERGE | `[e2e][merge]` | 5 | MERGE basic upsert (matched update + unmatched insert), update-only (all matched), insert-only (all unmatched), nonexistent source table error, case insensitivity |
 
 ### Test Categories Summary
 
@@ -307,6 +308,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | **DROP** | 6 | DROP TABLE (success, nonexistent, index cascade), DROP INDEX (success, nonexistent), DROP VIEW (success, nonexistent) |
 | **TRUNCATE** | 5 | TRUNCATE TABLE (rows cleared, table persists), shorthand syntax, empty table, nonexistent table, case insensitivity |
 | **Error-Stop** | 3 | `--file` stops on syntax/runtime error, interactive REPL continues after errors |
+| **MERGE** | 5 | MERGE basic upsert, update-only, insert-only, nonexistent table error, case insensitivity |
 
 ### Features Tested
 
@@ -327,6 +329,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 - `DROP VIEW <name>`
 - `TRUNCATE TABLE <name>` (clears rows, preserves table structure)
 - `TRUNCATE <name>` (shorthand without TABLE keyword)
+- `MERGE INTO ... USING ... ON ... WHEN MATCHED THEN UPDATE SET ... WHEN NOT MATCHED THEN INSERT VALUES ...` (upsert)
 - `LOAD table 'file'`
 - `.save <file>` (Save current tables to a formatted text file)
 - `.source <file>` (Execute SQL commands from file — stops on error)
@@ -411,5 +414,5 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 ### Test Results
 
 - **SQL Tests** (`tests/test_main.cpp`): 246 test cases — 861 assertions — all passing
-- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 67 test cases — 115 assertions — all passing
-- **Total**: 313 test cases — 976 assertions — **all passing**
+- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 72 test cases — 128 assertions — all passing
+- **Total**: 318 test cases — 989 assertions — **all passing**

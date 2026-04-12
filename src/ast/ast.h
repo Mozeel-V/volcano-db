@@ -213,6 +213,14 @@ struct AlterStmt {
     std::string new_name;      // for RENAME col/table
 };
 
+struct MergeStmt {
+    std::string target_table;
+    std::string source_table;
+    ExprPtr on_condition;
+    std::vector<std::pair<std::string, ExprPtr>> update_assignments;  // SET col = expr
+    std::vector<std::vector<ExprPtr>> insert_values;                  // VALUES (...)
+};
+
 // ───── Top-level statement ─────
 
 enum class StmtType {
@@ -235,6 +243,7 @@ enum class StmtType {
     ST_DROP_INDEX,
     ST_DROP_VIEW,
     ST_TRUNCATE,
+    ST_MERGE,
 };
 
 struct Statement {
@@ -248,6 +257,7 @@ struct Statement {
     std::shared_ptr<DeleteStmt> del;
     std::shared_ptr<LoadStmt> load;
     std::shared_ptr<AlterStmt> alter;
+    std::shared_ptr<MergeStmt> merge;
     std::string drop_name;  // name of table/index/view to drop, or table to truncate
     bool explain_analyze = false;
 };

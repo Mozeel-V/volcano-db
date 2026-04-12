@@ -905,3 +905,89 @@ TEST_CASE("E2E: --file stops on runtime error", "[e2e][error-stop]") {
 
     std::remove("err_runtime_test.sql");
 }
+
+// ─────────── MERGE Statement ───────────
+
+TEST_CASE("E2E: MERGE basic upsert", "[e2e][merge]") {
+    std::string output = run_interactive(
+        "CREATE TABLE target (id INT, name VARCHAR);\n"
+        "INSERT INTO target VALUES (1, 'Alice'), (2, 'Bob');\n"
+        "CREATE TABLE source (id INT, name VARCHAR);\n"
+        "INSERT INTO source VALUES (2, 'Bobby'), (3, 'Charlie');\n"
+        "MERGE INTO target USING source ON target.id = source.id "
+        "WHEN MATCHED THEN UPDATE SET name = source.name "
+        "WHEN NOT MATCHED THEN INSERT VALUES (3, 'Charlie');\n"
+        "SELECT * FROM target;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("MERGE into 'target'"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("updated"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("inserted"));
+    // Table should now have 3 rows
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(3 rows)"));
+}
+
+TEST_CASE("E2E: MERGE update only", "[e2e][merge]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t1 (id INT, val VARCHAR);\n"
+        "INSERT INTO t1 VALUES (1, 'old');\n"
+        "CREATE TABLE s1 (id INT, val VARCHAR);\n"
+        "INSERT INTO s1 VALUES (1, 'new');\n"
+        "MERGE INTO t1 USING s1 ON t1.id = s1.id "
+        "WHEN MATCHED THEN UPDATE SET val = s1.val "
+        "WHEN NOT MATCHED THEN INSERT VALUES (99, 'x');\n"
+        "SELECT * FROM t1;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) updated"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("0 row(s) inserted"));
+    // Still only 1 row
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
+}
+
+TEST_CASE("E2E: MERGE insert only", "[e2e][merge]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t2 (id INT, val VARCHAR);\n"
+        "CREATE TABLE s2 (id INT, val VARCHAR);\n"
+        "INSERT INTO s2 VALUES (1, 'a'), (2, 'b');\n"
+        "MERGE INTO t2 USING s2 ON t2.id = s2.id "
+        "WHEN MATCHED THEN UPDATE SET val = s2.val "
+        "WHEN NOT MATCHED THEN INSERT VALUES (1, 'a');\n"
+        "SELECT * FROM t2;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("0 row(s) updated"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("2 row(s) inserted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(2 rows)"));
+}
+
+TEST_CASE("E2E: MERGE nonexistent table error", "[e2e][merge]") {
+    std::string output = run_interactive(
+        "CREATE TABLE mt (id INT);\n"
+        "MERGE INTO mt USING ghost ON mt.id = ghost.id "
+        "WHEN MATCHED THEN UPDATE SET id = 1 "
+        "WHEN NOT MATCHED THEN INSERT VALUES (1);\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Source table not found: ghost"));
+}
+
+TEST_CASE("E2E: MERGE case insensitivity", "[e2e][merge]") {
+    std::string output = run_interactive(
+        "CREATE TABLE ct (id INT, v VARCHAR);\n"
+        "INSERT INTO ct VALUES (1, 'x');\n"
+        "CREATE TABLE cs (id INT, v VARCHAR);\n"
+        "INSERT INTO cs VALUES (1, 'y');\n"
+        "merge into ct using cs on ct.id = cs.id "
+        "when matched then update set v = cs.v "
+        "when not matched then insert values (2, 'z');\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("MERGE into 'ct'"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) updated"));
+}
