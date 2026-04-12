@@ -5,6 +5,13 @@
 #include <string>
 #include <cstdio>
 
+// Cross-platform path to the sqp executable
+#ifdef _WIN32
+#define SQP_EXE ".\\sqp.exe"
+#else
+#define SQP_EXE "./sqp"
+#endif
+
 // Helper to run a shell command and capture its output
 static std::string run_cmd(const std::string& cmd) {
     std::string result = "";
@@ -25,7 +32,7 @@ static std::string run_interactive(const std::string& commands) {
     std::ofstream script(".cmd_test.sql");
     script << commands;
     script.close();
-    std::string output = run_cmd("./sqp < .cmd_test.sql");
+    std::string output = run_cmd(std::string(SQP_EXE) + " < .cmd_test.sql");
     std::remove(".cmd_test.sql");
     return output;
 }
@@ -45,7 +52,7 @@ TEST_CASE("E2E: Execute SQL via --file", "[e2e][commands]") {
     script << "SELECT * FROM t1;\n";
     script.close();
 
-    std::string output = run_cmd("./sqp --file dynamic_test.sql");
+    std::string output = run_cmd(std::string(SQP_EXE) + " --file dynamic_test.sql");
 
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 't1' created."));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
@@ -66,7 +73,7 @@ TEST_CASE("E2E: Execute predefined test_script.sql via .source", "[e2e][commands
 
 TEST_CASE("E2E: File execution error handling", "[e2e][commands]") {
     // --file with nonexistent path
-    std::string output = run_cmd("./sqp --file does_not_exist.sql");
+    std::string output = run_cmd(std::string(SQP_EXE) + " --file does_not_exist.sql");
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Error: could not open script file"));
 
     // .source with no argument
@@ -82,7 +89,7 @@ TEST_CASE("E2E: Unterminated SQL in file", "[e2e][commands]") {
     script << "CREATE TABLE t2 (id INT)\n"; // no semicolon
     script.close();
 
-    std::string output = run_cmd("./sqp --file unterminated.sql");
+    std::string output = run_cmd(std::string(SQP_EXE) + " --file unterminated.sql");
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Warning: unterminated SQL statement at end of file"));
 
     std::remove("unterminated.sql");
@@ -296,7 +303,7 @@ TEST_CASE("E2E: Unknown dot command", "[e2e][commands]") {
 // ─────────────────────── --file usage error ───────────────────────
 
 TEST_CASE("E2E: --file with no path", "[e2e][commands]") {
-    std::string output = run_cmd("./sqp --file");
+    std::string output = run_cmd(std::string(SQP_EXE) + " --file");
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Usage: sqp --file <script.sql>"));
 }
 
@@ -307,7 +314,7 @@ TEST_CASE("E2E: Bare argument treated as script file", "[e2e][commands]") {
     script << "CREATE TABLE bare_t (v INT);\n";
     script.close();
 
-    std::string output = run_cmd("./sqp bare_arg_test.sql");
+    std::string output = run_cmd(std::string(SQP_EXE) + " bare_arg_test.sql");
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 'bare_t' created."));
 
     std::remove("bare_arg_test.sql");
@@ -837,4 +844,64 @@ TEST_CASE("E2E: TRUNCATE case insensitivity", "[e2e][ddl]") {
     );
 
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("truncated (2 rows removed)"));
+}
+
+// ─────────── Script Error-Stop Behaviour ───────────
+
+TEST_CASE("E2E: --file stops on syntax error", "[e2e][error-stop]") {
+    // Script: CREATE → valid INSERT → INVALID syntax → another INSERT → SELECT
+    // Expected: first INSERT runs, second INSERT does NOT (script stops at error)
+    std::ofstream script("err_stop_test.sql");
+    script << "CREATE TABLE es (id INT);\n";
+    script << "INSERT INTO es VALUES (1);\n";
+    script << "INVALID SYNTAX HERE;\n";
+    script << "INSERT INTO es VALUES (2);\n";
+    script << "SELECT * FROM es;\n";
+    script.close();
+
+    std::string output = run_cmd(std::string(SQP_EXE) + " --file err_stop_test.sql");
+
+    // First command should have executed
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 'es' created."));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
+    // Error should be reported
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Error: failed to parse query"));
+    // Second INSERT and SELECT should NOT appear (script stopped)
+    CHECK_THAT(output, !Catch::Matchers::ContainsSubstring("(1 rows)"));
+
+    std::remove("err_stop_test.sql");
+}
+
+TEST_CASE("E2E: interactive REPL continues after error", "[e2e][error-stop]") {
+    // In interactive mode, the REPL should continue after errors
+    std::string output = run_interactive(
+        "CREATE TABLE ie (id INT);\n"
+        "INVALID SYNTAX;\n"
+        "INSERT INTO ie VALUES (42);\n"
+        "SELECT * FROM ie;\n"
+        ".quit\n"
+    );
+
+    // Both the error and the subsequent INSERT should appear
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 'ie' created."));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Error: failed to parse query"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
+}
+
+TEST_CASE("E2E: --file stops on runtime error", "[e2e][error-stop]") {
+    // Script: INSERT into nonexistent table → should stop; subsequent CREATE should not run
+    std::ofstream script("err_runtime_test.sql");
+    script << "INSERT INTO ghost VALUES (1);\n";
+    script << "CREATE TABLE after_err (id INT);\n";
+    script.close();
+
+    std::string output = run_cmd(std::string(SQP_EXE) + " --file err_runtime_test.sql");
+
+    // The INSERT should fail
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table not found: ghost"));
+    // The CREATE after the error should NOT execute
+    CHECK_THAT(output, !Catch::Matchers::ContainsSubstring("Table 'after_err' created."));
+
+    std::remove("err_runtime_test.sql");
 }

@@ -283,6 +283,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 48 | ALTER TABLE | `[e2e][alter]` | 16 | ADD COLUMN (NULL backfill + new insert), DROP COLUMN (schema+data), RENAME COLUMN (SELECT with new name), RENAME TABLE (success + old name gone), RENAME TABLE standalone (success + old name gone + error cases), error: duplicate column, nonexistent column, last column, existing table, nonexistent table, rename to existing name, index compatibility |
 | 49 | DROP TABLE/INDEX/VIEW | `[e2e][ddl]` | 6 | DROP TABLE (success + nonexistent error + index cascade), DROP INDEX (success + nonexistent), DROP VIEW (success + create+drop+verify gone + nonexistent) |
 | 50 | TRUNCATE | `[e2e][ddl]` | 5 | TRUNCATE TABLE (clears rows, table persists, insert after), TRUNCATE shorthand, TRUNCATE empty table, TRUNCATE nonexistent error, case insensitivity |
+| 51 | Script Error-Stop | `[e2e][error-stop]` | 3 | `--file` stops on syntax error (earlier commands execute, later don't), interactive REPL continues after error, `--file` stops on runtime error (nonexistent table) |
 
 ### Test Categories Summary
 
@@ -305,6 +306,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | **ALTER TABLE** | 16 | ADD COLUMN (NULL backfill), DROP COLUMN (schema+data), RENAME COLUMN, RENAME TABLE, RENAME TABLE standalone, error cases (duplicate, nonexistent, last column, existing table), index compatibility |
 | **DROP** | 6 | DROP TABLE (success, nonexistent, index cascade), DROP INDEX (success, nonexistent), DROP VIEW (success, nonexistent) |
 | **TRUNCATE** | 5 | TRUNCATE TABLE (rows cleared, table persists), shorthand syntax, empty table, nonexistent table, case insensitivity |
+| **Error-Stop** | 3 | `--file` stops on syntax/runtime error, interactive REPL continues after errors |
 
 ### Features Tested
 
@@ -327,8 +329,8 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 - `TRUNCATE <name>` (shorthand without TABLE keyword)
 - `LOAD table 'file'`
 - `.save <file>` (Save current tables to a formatted text file)
-- `.source <file>` (Execute SQL commands from file)
-- `--file <file>` (Command line script execution)
+- `.source <file>` (Execute SQL commands from file — stops on error)
+- `--file <file>` (Command line script execution — stops on error)
 - `EXPLAIN SELECT`
 - `EXPLAIN ANALYZE SELECT`
 - `BENCHMARK SELECT`
@@ -409,5 +411,5 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 ### Test Results
 
 - **SQL Tests** (`tests/test_main.cpp`): 246 test cases — 861 assertions — all passing
-- **Command, DML, ALTER, DROP & TRUNCATE Tests** (`tests/test_commands.cpp`): 64 test cases (22 CLI + 15 DML + 16 ALTER TABLE + 6 DROP + 5 TRUNCATE) — all passing
-- **Total**: 310 test cases — **all passing**
+- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 67 test cases — 115 assertions — all passing
+- **Total**: 313 test cases — 976 assertions — **all passing**

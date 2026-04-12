@@ -261,11 +261,11 @@ static void print_result(const executor::ExecResult& res, bool show_stats) {
     }
 }
 
-static void execute_sql(const std::string& sql, storage::Catalog& catalog) {
+static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
     auto stmt = ast::parse_sql(sql);
     if (!stmt) {
         std::cout << "Error: failed to parse query\n";
-        return;
+        return false;
     }
 
     try {
@@ -322,14 +322,12 @@ static void execute_sql(const std::string& sql, storage::Catalog& catalog) {
             case ast::StmtType::ST_INSERT: {
                 auto& ins = *stmt->insert;
                 auto* tbl = catalog.get_table(ins.table_name);
-                if (!tbl) { std::cout << "Table not found: " << ins.table_name << "\n"; break; }
+                if (!tbl) throw std::runtime_error("Table not found: " + ins.table_name);
 
                 size_t inserted = 0;
                 for (auto& val_exprs : ins.values) {
                     if (val_exprs.size() != tbl->schema.size()) {
-                        std::cout << "Column count mismatch: expected " << tbl->schema.size()
-                                  << " but got " << val_exprs.size() << "\n";
-                        continue;
+                        throw std::runtime_error("Column count mismatch: expected " + std::to_string(tbl->schema.size()) + " but got " + std::to_string(val_exprs.size()));
                     }
                     storage::Row row;
                     for (auto& e : val_exprs) {
@@ -351,15 +349,14 @@ static void execute_sql(const std::string& sql, storage::Catalog& catalog) {
             case ast::StmtType::ST_UPDATE: {
                 auto& upd = *stmt->update;
                 auto* tbl = catalog.get_table(upd.table_name);
-                if (!tbl) { std::cout << "Table not found: " << upd.table_name << "\n"; break; }
+                if (!tbl) throw std::runtime_error("Table not found: " + upd.table_name);
 
                 // Resolve column indices for assignments
                 std::vector<std::pair<int, ast::ExprPtr>> resolved;
                 for (auto& [col, expr] : upd.assignments) {
                     int idx = tbl->column_index(col);
                     if (idx < 0) {
-                        std::cout << "Column not found: " << col << "\n";
-                        break;
+                        throw std::runtime_error("Column not found: " + col);
                     }
                     resolved.emplace_back(idx, expr);
                 }
@@ -391,7 +388,7 @@ static void execute_sql(const std::string& sql, storage::Catalog& catalog) {
             case ast::StmtType::ST_DELETE: {
                 auto& del = *stmt->del;
                 auto* tbl = catalog.get_table(del.table_name);
-                if (!tbl) { std::cout << "Table not found: " << del.table_name << "\n"; break; }
+                if (!tbl) throw std::runtime_error("Table not found: " + del.table_name);
 
                 size_t before = tbl->rows.size();
                 if (!del.where_clause) {
@@ -707,7 +704,9 @@ static void execute_sql(const std::string& sql, storage::Catalog& catalog) {
         }
     } catch (const std::exception& e) {
         std::cout << "Error: " << e.what() << "\n";
+        return false;
     }
+    return true;
 }
 
 static bool run_script_file(const std::string& path, storage::Catalog& catalog);
@@ -788,29 +787,33 @@ static bool handle_dot_command(const std::string& line, storage::Catalog& catalo
 static bool process_input_line(const std::string& raw_line,
                                storage::Catalog& catalog,
                                std::string& buffer,
-                               bool print_prompts) {
+                               bool is_interactive) {
     std::string line = trim_copy(raw_line);
     if (line.empty()) {
-        if (print_prompts) std::cout << "sqp> ";
+        if (is_interactive) std::cout << "sqp> ";
         return true;
     }
 
     if (line[0] == '.') {
         bool keep_running = handle_dot_command(line, catalog);
-        if (keep_running && print_prompts) std::cout << "sqp> ";
+        if (keep_running && is_interactive) std::cout << "sqp> ";
         return keep_running;
     }
 
     if (!buffer.empty()) buffer += " ";
     buffer += line;
     if (buffer.back() != ';') {
-        if (print_prompts) std::cout << "  -> ";
+        if (is_interactive) std::cout << "  -> ";
         return true;
     }
 
-    execute_sql(buffer, catalog);
+    bool success = execute_sql(buffer, catalog);
     buffer.clear();
-    if (print_prompts) std::cout << "sqp> ";
+
+    // In script mode, stop on error; in interactive mode, continue
+    if (!success && !is_interactive) return false;
+
+    if (is_interactive) std::cout << "sqp> ";
     return true;
 }
 
