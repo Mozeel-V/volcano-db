@@ -106,6 +106,8 @@ extern int yylineno;
 "TRUNCATE"          { return TRUNCATE_KW; }
 "MERGE"             { return MERGE; }
 "MATCHED"           { return MATCHED; }
+"FORMAT"            { return FORMAT; }
+"DOT"               { return DOT; }
 
     /* ── Operators ── */
 "<="                { return LEQ; }

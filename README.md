@@ -285,30 +285,32 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 50 | TRUNCATE | `[e2e][ddl]` | 5 | TRUNCATE TABLE (clears rows, table persists, insert after), TRUNCATE shorthand, TRUNCATE empty table, TRUNCATE nonexistent error, case insensitivity |
 | 51 | Script Error-Stop | `[e2e][error-stop]` | 3 | `--file` stops on syntax error (earlier commands execute, later don't), interactive REPL continues after error, `--file` stops on runtime error (nonexistent table) |
 | 52 | MERGE | `[e2e][merge]` | 5 | MERGE basic upsert (matched update + unmatched insert), update-only (all matched), insert-only (all unmatched), nonexistent source table error, case insensitivity |
+| 53 | Query Plan Visualization | `[e2e][explain]` `[e2e][commands]` | 4 | EXPLAIN tree connectors, EXPLAIN ANALYZE per-node actual stats, EXPLAIN FORMAT DOT (Graphviz), `.plan`/`.plan dot` commands |
 
 ### Test Categories Summary
 
-| Category | Total Tests | What it covers |
-|----------|-------------|----------------|
-| **Parser** | ~60 | All DDL/DML parsing, expression types, clauses, join syntax, EXPLAIN/BENCHMARK |
-| **Case Insensitivity** | 11 | Keywords, aggregate names, JOIN types, ASC/DESC, EXPLAIN, DISTINCT, IS NULL, BETWEEN/LIKE/IN — all mixed case |
-| **Grammar & Punctuation** | 10 | Semicolons, commas, parentheses, dot notation, quotes, operator precedence, comments |
-| **Storage** | ~19 | Value operations (null, arithmetic, comparison), Table CRUD, Catalog, Hash Index, B-Tree Index |
-| **Planner** | ~8 | Logical plan structure for each node type, to_string, INDEX_SCAN |
-| **Optimizer** | ~4 | Rule-based pushdown, cost estimation, hash join selection, result preservation, **index scan rewriting** |
-| **Executor** | ~3 | Execution stats tracking |
-| **End-to-End** | ~80+ | Full pipeline (parse→plan→optimize→execute) for SELECT, WHERE, ORDER BY, LIMIT, DISTINCT, aggregation, JOINs, NULLs, subqueries, EXPLAIN, combined patterns |
-| **Edge Cases** | ~13 | Empty tables, single rows, long strings, negative values, NULL-heavy, self-joins, boundary conditions |
-| **Regression** | ~8 | Complex nested logic, boundary BETWEEN, single IN, expression aliases, compound queries |
-| **Benchmarks** | ~8 | Data generation, query correctness on generated data |
-| **CLI Commands** | 22 | All dot commands (`.help`, `.tables`, `.schema`, `.generate`, `.save`, `.benchmark`, `.quit`, `.exit`, `.source`), `--file`, bare arg, unknown command, error handling |
-| **Index Integration** | 17 | BTreeIndex data structure, catalog routing, optimizer rewriting, executor correctness, planner printing |
-| **DML Operations** | 15 | INSERT single/multi-row, UPDATE with SET/WHERE, DELETE with/without WHERE, column mismatch, nonexistent tables, full DML sequence |
-| **ALTER TABLE** | 16 | ADD COLUMN (NULL backfill), DROP COLUMN (schema+data), RENAME COLUMN, RENAME TABLE, RENAME TABLE standalone, error cases (duplicate, nonexistent, last column, existing table), index compatibility |
-| **DROP** | 6 | DROP TABLE (success, nonexistent, index cascade), DROP INDEX (success, nonexistent), DROP VIEW (success, nonexistent) |
-| **TRUNCATE** | 5 | TRUNCATE TABLE (rows cleared, table persists), shorthand syntax, empty table, nonexistent table, case insensitivity |
-| **Error-Stop** | 3 | `--file` stops on syntax/runtime error, interactive REPL continues after errors |
-| **MERGE** | 5 | MERGE basic upsert, update-only, insert-only, nonexistent table error, case insensitivity |
+| Category | Tests | Coverage |
+|----------|------:|----------|
+| Parser | 60 | DDL/DML parsing, expressions, clauses, joins, EXPLAIN/BENCHMARK |
+| Case Insensitivity | 11 | Keywords, aggregates, JOINs, ASC/DESC, DISTINCT, IS NULL, BETWEEN/LIKE/IN |
+| Grammar & Punctuation | 10 | Semicolons, commas, parens, dot notation, quotes, operator precedence, comments |
+| Storage | 19 | Value ops, Table CRUD, Catalog, Hash Index, B-Tree Index |
+| Planner | 8 | Logical plan nodes, to_string, INDEX_SCAN |
+| Optimizer | 4 | Pushdown, cost estimation, hash join, index scan rewriting |
+| Executor | 3 | Execution stats tracking |
+| End-to-End | 80+ | Full pipeline for SELECT, WHERE, ORDER BY, LIMIT, DISTINCT, aggregation, JOINs, subqueries |
+| Edge Cases | 13 | Empty tables, NULLs, long strings, negatives, self-joins, boundaries |
+| Regression | 8 | Nested logic, boundary BETWEEN, expression aliases, compound queries |
+| Benchmarks | 8 | Data generation, query correctness |
+| CLI Commands | 22 | Dot commands, `--file`, bare arg, unknown command, error handling |
+| Index Integration | 17 | BTreeIndex, catalog routing, optimizer rewriting, executor correctness |
+| DML Operations | 15 | INSERT/UPDATE/DELETE single/multi-row, column mismatch, nonexistent tables |
+| ALTER TABLE | 16 | ADD/DROP/RENAME COLUMN, RENAME TABLE, error cases, index compat |
+| DROP | 6 | DROP TABLE/INDEX/VIEW (success + nonexistent + cascade) |
+| TRUNCATE | 5 | TRUNCATE TABLE/shorthand, empty/nonexistent table, case insensitivity |
+| Error-Stop | 3 | `--file` stops on error, interactive REPL continues |
+| MERGE | 5 | Upsert, update-only, insert-only, error, case insensitivity |
+| Query Plan Viz | 4 | Tree connectors, per-node stats, DOT export, `.plan` command |
 
 ### Features Tested
 
@@ -333,9 +335,12 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 - `LOAD table 'file'`
 - `.save <file>` (Save current tables to a formatted text file)
 - `.source <file>` (Execute SQL commands from file — stops on error)
+- `.plan` (Show last EXPLAIN plan in tree format)
+- `.plan dot` (Show last EXPLAIN plan in Graphviz DOT format)
 - `--file <file>` (Command line script execution — stops on error)
-- `EXPLAIN SELECT`
-- `EXPLAIN ANALYZE SELECT`
+- `EXPLAIN SELECT` (tree-connector plan visualization)
+- `EXPLAIN ANALYZE SELECT` (plan + per-node actual execution stats)
+- `EXPLAIN FORMAT DOT SELECT` (Graphviz DOT format plan export)
 - `BENCHMARK SELECT`
 
 #### SQL Clauses
@@ -414,5 +419,5 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 ### Test Results
 
 - **SQL Tests** (`tests/test_main.cpp`): 246 test cases — 861 assertions — all passing
-- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 72 test cases — 128 assertions — all passing
-- **Total**: 318 test cases — 989 assertions — **all passing**
+- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 76 test cases — 143 assertions — all passing
+- **Total**: 322 test cases — 1004 assertions — **all passing**

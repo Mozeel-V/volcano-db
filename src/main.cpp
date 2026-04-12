@@ -98,12 +98,16 @@ StmtPtr parse_sql(const std::string& sql) {
 }
 }
 
+// Last optimized plan for .plan command
+static planner::LogicalNodePtr last_explain_plan;
+
 static void print_help() {
     std::cout << R"(
 Simple Query Processor — Commands:
     SQL queries:      SELECT, CREATE TABLE, CREATE INDEX, CREATE VIEW, CREATE MATERIALIZED VIEW, INSERT, LOAD
-  EXPLAIN <query>   Show query plan
-  EXPLAIN ANALYZE   Show plan + execution stats
+  EXPLAIN <query>   Show query plan (tree format)
+  EXPLAIN ANALYZE   Show plan + execution stats (per-node)
+  EXPLAIN FORMAT DOT <query>  Show plan in Graphviz DOT format
   BENCHMARK <query> Run query with performance profiling
 
   Special commands:
@@ -113,6 +117,8 @@ Simple Query Processor — Commands:
     .generate <n>   Generate sample data (n rows)
     .save <file>    Save all current tables to a text file
     .source <file>  Execute SQL commands from file
+    .plan           Show last EXPLAIN plan (tree format)
+    .plan dot       Show last EXPLAIN plan (DOT format)
     .benchmark      Run benchmark suite
     .quit / .exit   Exit
 )";
@@ -438,23 +444,40 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
 
                 try {
                     auto plan = planner::build_logical_plan(*stmt->select, catalog);
-                    std::cout << "\n── Logical Plan (before optimization) ──\n";
-                    std::cout << plan->to_string();
-
                     auto opt_plan = optimizer::optimize(plan, catalog);
-                    std::cout << "\n── Optimized Plan ──\n";
-                    std::cout << opt_plan->to_string();
 
-                    if (stmt->explain_analyze) {
-                        auto result = executor::execute(opt_plan, catalog);
-                        std::cout << "\n── Execution Statistics ──\n";
-                        std::cout << "  Rows scanned:     " << result.stats.rows_scanned << "\n";
-                        std::cout << "  Rows filtered:    " << result.stats.rows_filtered << "\n";
-                        std::cout << "  Join comparisons: " << result.stats.join_comparisons << "\n";
-                        std::cout << "  Rows produced:    " << result.stats.rows_produced << "\n";
-                        std::cout << "  Execution time:   " << std::fixed << std::setprecision(3)
-                                  << result.stats.exec_time_ms << " ms\n";
+                    if (stmt->explain_dot) {
+                        // DOT/Graphviz output
+                        if (stmt->explain_analyze) {
+                            auto result = executor::execute(opt_plan, catalog);
+                            result.stats.rows_produced = result.rows.size();
+                        }
+                        std::cout << opt_plan->to_dot_string();
+                    } else {
+                        // Tree-connector output
+                        std::cout << "\n── Logical Plan (before optimization) ──\n";
+                        std::cout << plan->to_tree_string();
+
+                        std::cout << "\n── Optimized Plan ──\n";
+                        std::cout << opt_plan->to_tree_string();
+
+                        if (stmt->explain_analyze) {
+                            auto result = executor::execute(opt_plan, catalog);
+                            std::cout << "\n── Optimized Plan (with actual stats) ──\n";
+                            std::cout << opt_plan->to_tree_string();
+
+                            std::cout << "\n── Execution Statistics ──\n";
+                            std::cout << "  Rows scanned:     " << result.stats.rows_scanned << "\n";
+                            std::cout << "  Rows filtered:    " << result.stats.rows_filtered << "\n";
+                            std::cout << "  Join comparisons: " << result.stats.join_comparisons << "\n";
+                            std::cout << "  Rows produced:    " << result.stats.rows_produced << "\n";
+                            std::cout << "  Execution time:   " << std::fixed << std::setprecision(3)
+                                      << result.stats.exec_time_ms << " ms\n";
+                        }
                     }
+
+                    // Store last plan for .plan command
+                    last_explain_plan = opt_plan;
 
                     executor::cleanup_temporary_views(catalog, temp_tables);
                 } catch (...) {
@@ -846,6 +869,20 @@ static bool handle_dot_command(const std::string& line, storage::Catalog& catalo
             return true;
         }
         save_tables_to_file(path, catalog);
+        return true;
+    }
+    if (starts_with(line, ".plan")) {
+        std::string arg = trim_copy(line.substr(5));
+        if (!last_explain_plan) {
+            std::cout << "No plan available. Run EXPLAIN first.\n";
+            return true;
+        }
+        if (arg == "dot") {
+            std::cout << last_explain_plan->to_dot_string();
+        } else {
+            std::cout << "\n── Last Optimized Plan ──\n";
+            std::cout << last_explain_plan->to_tree_string();
+        }
         return true;
     }
     if (starts_with(line, ".source")) {

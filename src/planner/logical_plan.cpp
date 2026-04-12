@@ -1,65 +1,62 @@
 #include "planner/planner.h"
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
 
 namespace planner {
 
-// ───── Pretty-print plan tree ─────
-std::string LogicalNode::to_string(int indent) const {
-    std::string pad(indent * 2, ' ');
+// ───── Helper: generate node label string ─────
+static std::string node_label(const LogicalNode& n) {
     std::string s;
-    switch (type) {
+    switch (n.type) {
         case LogicalNodeType::TABLE_SCAN:
-            s = pad + "SeqScan(" + table_name + ")";
-            break;
+            s = "SeqScan(" + n.table_name + ")"; break;
         case LogicalNodeType::INDEX_SCAN:
-            s = pad + "IndexScan(" + table_name + "." + index_column;
-            if (index_range)
-                s += " RANGE";
-            else if (index_key)
-                s += " = " + index_key->to_string();
-            s += ")";
-            break;
+            s = "IndexScan(" + n.table_name + "." + n.index_column;
+            if (n.index_range) s += " RANGE";
+            else if (n.index_key) s += " = " + n.index_key->to_string();
+            s += ")"; break;
         case LogicalNodeType::FILTER:
-            s = pad + "Filter(" + (predicate ? predicate->to_string() : "?") + ")";
-            break;
+            s = "Filter(" + (n.predicate ? n.predicate->to_string() : "?") + ")"; break;
         case LogicalNodeType::PROJECTION: {
-            s = pad + "Projection(";
-            for (size_t i = 0; i < output_names.size(); i++) {
+            s = "Projection(";
+            for (size_t i = 0; i < n.output_names.size(); i++) {
                 if (i) s += ", ";
-                s += output_names[i];
+                s += n.output_names[i];
             }
-            s += ")";
-            break;
+            s += ")"; break;
         }
         case LogicalNodeType::JOIN:
-            s = pad + (join_algo == JoinAlgo::HASH_JOIN ? "HashJoin" : "NestedLoopJoin");
-            s += "(" + (join_cond ? join_cond->to_string() : "cross") + ")";
-            break;
+            s = (n.join_algo == JoinAlgo::HASH_JOIN ? "HashJoin" : "NestedLoopJoin");
+            s += "(" + (n.join_cond ? n.join_cond->to_string() : "cross") + ")"; break;
         case LogicalNodeType::AGGREGATION: {
-            s = pad + "Aggregate(";
-            for (size_t i = 0; i < agg_output_names.size(); i++) {
+            s = "Aggregate(";
+            for (size_t i = 0; i < n.agg_output_names.size(); i++) {
                 if (i) s += ", ";
-                s += agg_output_names[i];
+                s += n.agg_output_names[i];
             }
-            s += ")";
-            break;
+            s += ")"; break;
         }
         case LogicalNodeType::SORT:
-            s = pad + "Sort(";
-            for (size_t i = 0; i < sort_keys.size(); i++) {
+            s = "Sort(";
+            for (size_t i = 0; i < n.sort_keys.size(); i++) {
                 if (i) s += ", ";
-                s += sort_keys[i].expr->to_string();
-                s += sort_keys[i].ascending ? " ASC" : " DESC";
+                s += n.sort_keys[i].expr->to_string();
+                s += n.sort_keys[i].ascending ? " ASC" : " DESC";
             }
-            s += ")";
-            break;
+            s += ")"; break;
         case LogicalNodeType::LIMIT:
-            s = pad + "Limit(" + std::to_string(limit_count) + ", offset=" + std::to_string(offset_count) + ")";
-            break;
+            s = "Limit(" + std::to_string(n.limit_count) + ", offset=" + std::to_string(n.offset_count) + ")"; break;
         case LogicalNodeType::DISTINCT:
-            s = pad + "Distinct";
-            break;
+            s = "Distinct"; break;
     }
+    return s;
+}
+
+// ───── Pretty-print plan tree (legacy indented format) ─────
+std::string LogicalNode::to_string(int indent) const {
+    std::string pad(indent * 2, ' ');
+    std::string s = pad + node_label(*this);
     if (estimated_rows > 0) {
         s += "  [est_rows=" + std::to_string((int)estimated_rows) +
              " cost=" + std::to_string((int)estimated_cost) + "]";
@@ -68,6 +65,99 @@ std::string LogicalNode::to_string(int indent) const {
     if (left) s += left->to_string(indent + 1);
     if (right) s += right->to_string(indent + 1);
     return s;
+}
+
+// ───── Tree-connector visualization ─────
+std::string LogicalNode::to_tree_string(const std::string& prefix, bool is_last) const {
+    std::string line;
+    line += prefix;
+    line += is_last ? "└── " : "├── ";
+    line += node_label(*this);
+
+    // Cost estimates
+    if (estimated_rows > 0) {
+        line += "  [est_rows=" + std::to_string((int)estimated_rows) +
+                " cost=" + std::to_string((int)estimated_cost);
+        // Per-node actual stats (EXPLAIN ANALYZE)
+        if (has_actual_stats) {
+            line += " | actual=" + std::to_string(actual_rows);
+            std::ostringstream oss;
+            oss << std::fixed << std::setprecision(3) << actual_time_ms;
+            line += " time=" + oss.str() + "ms";
+        }
+        line += "]";
+    } else if (has_actual_stats) {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(3) << actual_time_ms;
+        line += "  [actual=" + std::to_string(actual_rows) + " time=" + oss.str() + "ms]";
+    }
+    line += "\n";
+
+    std::string child_prefix = prefix + (is_last ? "    " : "│   ");
+    if (left && right) {
+        line += left->to_tree_string(child_prefix, false);
+        line += right->to_tree_string(child_prefix, true);
+    } else if (left) {
+        line += left->to_tree_string(child_prefix, true);
+    }
+    return line;
+}
+
+// ───── DOT/Graphviz export ─────
+static void to_dot_helper(const LogicalNode& n, std::string& dot, int& id) {
+    int my_id = id++;
+    std::string label = node_label(n);
+    // Escape quotes in label
+    std::string escaped;
+    for (char c : label) {
+        if (c == '"') escaped += "\\\"";
+        else escaped += c;
+    }
+
+    // Pick color based on node type
+    std::string color;
+    switch (n.type) {
+        case LogicalNodeType::TABLE_SCAN:  color = "lightyellow"; break;
+        case LogicalNodeType::INDEX_SCAN:  color = "lightgreen"; break;
+        case LogicalNodeType::FILTER:      color = "lightsalmon"; break;
+        case LogicalNodeType::PROJECTION:  color = "lightblue"; break;
+        case LogicalNodeType::JOIN:        color = "plum"; break;
+        case LogicalNodeType::AGGREGATION: color = "lightcoral"; break;
+        case LogicalNodeType::SORT:        color = "lightskyblue"; break;
+        case LogicalNodeType::LIMIT:       color = "lightgoldenrodyellow"; break;
+        case LogicalNodeType::DISTINCT:    color = "paleturquoise"; break;
+    }
+
+    dot += "  n" + std::to_string(my_id) + " [label=\"" + escaped;
+    if (n.estimated_rows > 0)
+        dot += "\\nest=" + std::to_string((int)n.estimated_rows) + " cost=" + std::to_string((int)n.estimated_cost);
+    if (n.has_actual_stats) {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(3) << n.actual_time_ms;
+        dot += "\\nactual=" + std::to_string(n.actual_rows) + " time=" + oss.str() + "ms";
+    }
+    dot += "\", fillcolor=\"" + color + "\"];\n";
+
+    if (n.left) {
+        int child_id = id;
+        to_dot_helper(*n.left, dot, id);
+        dot += "  n" + std::to_string(my_id) + " -> n" + std::to_string(child_id) + ";\n";
+    }
+    if (n.right) {
+        int child_id = id;
+        to_dot_helper(*n.right, dot, id);
+        dot += "  n" + std::to_string(my_id) + " -> n" + std::to_string(child_id) + ";\n";
+    }
+}
+
+std::string LogicalNode::to_dot_string() const {
+    std::string dot = "digraph QueryPlan {\n";
+    dot += "  rankdir=TB;\n";
+    dot += "  node [shape=record, style=filled, fontname=\"Courier\"];\n";
+    int id = 0;
+    to_dot_helper(*this, dot, id);
+    dot += "}\n";
+    return dot;
 }
 
 // ───── Build logical plan from AST ─────

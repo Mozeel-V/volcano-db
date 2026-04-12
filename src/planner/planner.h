@@ -64,7 +64,14 @@ struct LogicalNode {
     double estimated_rows = 0;
     double estimated_cost = 0;
 
+    // Actual execution stats (populated by executor for EXPLAIN ANALYZE)
+    size_t actual_rows = 0;
+    double actual_time_ms = 0;
+    bool has_actual_stats = false;
+
     std::string to_string(int indent = 0) const;
+    std::string to_tree_string(const std::string& prefix = "", bool is_last = true) const;
+    std::string to_dot_string() const;
 };
 
 using LogicalNodePtr = std::shared_ptr<LogicalNode>;

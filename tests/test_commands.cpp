@@ -991,3 +991,66 @@ TEST_CASE("E2E: MERGE case insensitivity", "[e2e][merge]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("MERGE into 'ct'"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) updated"));
 }
+
+// ─────────── Query Plan Visualization ───────────
+
+TEST_CASE("E2E: EXPLAIN tree connectors", "[e2e][explain]") {
+    std::string output = run_interactive(
+        "CREATE TABLE emp (id INT, name VARCHAR, salary INT);\n"
+        "INSERT INTO emp VALUES (1, 'Alice', 50000);\n"
+        "EXPLAIN SELECT * FROM emp WHERE salary > 40000;\n"
+        ".quit\n"
+    );
+
+    // Should have tree connectors
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Logical Plan"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Optimized Plan"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("SeqScan(emp)"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Filter("));
+}
+
+TEST_CASE("E2E: EXPLAIN ANALYZE per-node stats", "[e2e][explain]") {
+    std::string output = run_interactive(
+        "CREATE TABLE stats_t (id INT, val VARCHAR);\n"
+        "INSERT INTO stats_t VALUES (1, 'a'), (2, 'b'), (3, 'c');\n"
+        "EXPLAIN ANALYZE SELECT * FROM stats_t WHERE id > 1;\n"
+        ".quit\n"
+    );
+
+    // Should show actual stats
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("actual="));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("time="));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Execution Statistics"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Rows scanned"));
+}
+
+TEST_CASE("E2E: EXPLAIN FORMAT DOT", "[e2e][explain]") {
+    std::string output = run_interactive(
+        "CREATE TABLE dot_t (id INT, name VARCHAR);\n"
+        "INSERT INTO dot_t VALUES (1, 'x');\n"
+        "EXPLAIN FORMAT DOT SELECT * FROM dot_t;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("digraph QueryPlan"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("rankdir=TB"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("SeqScan"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("fillcolor="));
+}
+
+TEST_CASE("E2E: .plan command", "[e2e][commands]") {
+    std::string output = run_interactive(
+        "CREATE TABLE plan_t (id INT, val VARCHAR);\n"
+        "INSERT INTO plan_t VALUES (1, 'a');\n"
+        "EXPLAIN SELECT * FROM plan_t;\n"
+        ".plan\n"
+        ".plan dot\n"
+        ".quit\n"
+    );
+
+    // .plan should show tree
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Last Optimized Plan"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("SeqScan(plan_t)"));
+    // .plan dot should show DOT
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("digraph QueryPlan"));
+}

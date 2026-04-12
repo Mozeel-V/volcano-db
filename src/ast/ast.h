@@ -260,6 +260,7 @@ struct Statement {
     std::shared_ptr<MergeStmt> merge;
     std::string drop_name;  // name of table/index/view to drop, or table to truncate
     bool explain_analyze = false;
+    bool explain_dot = false;
 };
 
 // Parser interface

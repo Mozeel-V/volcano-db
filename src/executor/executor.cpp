@@ -578,18 +578,24 @@ static ExecResult exec_distinct(const LogicalNodePtr& node, Catalog& catalog, Ex
 // ───── Dispatch ─────
 static ExecResult exec_node(const LogicalNodePtr& node, Catalog& catalog, ExecStats& stats) {
     if (!node) return {};
+    auto t0 = std::chrono::high_resolution_clock::now();
+    ExecResult res;
     switch (node->type) {
-        case LogicalNodeType::TABLE_SCAN:   return exec_scan(node, catalog, stats);
-        case LogicalNodeType::INDEX_SCAN:    return exec_index_scan(node, catalog, stats);
-        case LogicalNodeType::FILTER:       return exec_filter(node, catalog, stats);
-        case LogicalNodeType::PROJECTION:   return exec_projection(node, catalog, stats);
-        case LogicalNodeType::JOIN:         return exec_join(node, catalog, stats);
-        case LogicalNodeType::AGGREGATION:  return exec_aggregation(node, catalog, stats);
-        case LogicalNodeType::SORT:         return exec_sort(node, catalog, stats);
-        case LogicalNodeType::LIMIT:        return exec_limit(node, catalog, stats);
-        case LogicalNodeType::DISTINCT:     return exec_distinct(node, catalog, stats);
+        case LogicalNodeType::TABLE_SCAN:   res = exec_scan(node, catalog, stats); break;
+        case LogicalNodeType::INDEX_SCAN:    res = exec_index_scan(node, catalog, stats); break;
+        case LogicalNodeType::FILTER:       res = exec_filter(node, catalog, stats); break;
+        case LogicalNodeType::PROJECTION:   res = exec_projection(node, catalog, stats); break;
+        case LogicalNodeType::JOIN:         res = exec_join(node, catalog, stats); break;
+        case LogicalNodeType::AGGREGATION:  res = exec_aggregation(node, catalog, stats); break;
+        case LogicalNodeType::SORT:         res = exec_sort(node, catalog, stats); break;
+        case LogicalNodeType::LIMIT:        res = exec_limit(node, catalog, stats); break;
+        case LogicalNodeType::DISTINCT:     res = exec_distinct(node, catalog, stats); break;
     }
-    return {};
+    auto t1 = std::chrono::high_resolution_clock::now();
+    node->actual_rows = res.rows.size();
+    node->actual_time_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    node->has_actual_stats = true;
+    return res;
 }
 
 // ───── Public entry ─────

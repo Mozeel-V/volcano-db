@@ -92,6 +92,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %token UPDATE SET DELETE_KW
 %token ALTER ADD COLUMN RENAME TO DROP TRUNCATE_KW
 %token MERGE MATCHED
+%token FORMAT DOT
 %token COUNT SUM AVG MIN MAX
 %token TYPE_INT TYPE_FLOAT TYPE_VARCHAR
 %token CASE WHEN THEN ELSE END
@@ -143,6 +144,14 @@ statement:
     | EXPLAIN ANALYZE select_stmt {
           auto st = new Statement(); st->type = StmtType::ST_EXPLAIN;
           st->select.reset($3); st->explain_analyze = true; $$ = st;
+      }
+    | EXPLAIN FORMAT DOT select_stmt {
+          auto st = new Statement(); st->type = StmtType::ST_EXPLAIN;
+          st->select.reset($4); st->explain_dot = true; $$ = st;
+      }
+    | EXPLAIN ANALYZE FORMAT DOT select_stmt {
+          auto st = new Statement(); st->type = StmtType::ST_EXPLAIN;
+          st->select.reset($5); st->explain_analyze = true; st->explain_dot = true; $$ = st;
       }
     | CREATE TABLE IDENTIFIER '(' column_def_list ')' {
           auto st = new Statement(); st->type = StmtType::ST_CREATE_TABLE;
