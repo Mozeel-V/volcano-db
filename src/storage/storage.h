@@ -103,6 +103,15 @@ struct IndexEntry {
     std::shared_ptr<BTreeIndex> btree_idx;
 };
 
+// ───── Trigger definition ─────
+struct TriggerDef {
+    std::string name;
+    std::string table_name;
+    enum When { BEFORE, AFTER } when;
+    enum Event { ON_INSERT, ON_UPDATE, ON_DELETE } event;
+    std::string action_sql;
+};
+
 // ───── Catalog ─────
 class Catalog {
 public:
@@ -137,6 +146,12 @@ public:
     // statistics
     size_t table_cardinality(const std::string& name) const;
     size_t column_distinct(const std::string& table, const std::string& col) const;
+
+    // Trigger management
+    std::vector<std::shared_ptr<TriggerDef>> triggers;
+    void add_trigger(std::shared_ptr<TriggerDef> t);
+    bool drop_trigger(const std::string& name);
+    std::vector<TriggerDef*> get_triggers(const std::string& table, TriggerDef::Event event);
 };
 
 // ───── Value helpers ─────

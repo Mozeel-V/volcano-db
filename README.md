@@ -106,6 +106,7 @@ SELECT dept, COUNT(*) FROM employees GROUP BY dept;
 | `.source <file>` | Execute SQL commands from a file |
 | `.plan` | Show last EXPLAIN plan (tree format) |
 | `.plan dot` | Show last EXPLAIN plan (Graphviz DOT format) |
+| `.triggers` | List all defined triggers |
 | `.benchmark` | Run benchmark suite (optimized vs unoptimized) |
 | `.quit` / `.exit` | Exit |
 
@@ -288,6 +289,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 51 | Script Error-Stop | `[e2e][error-stop]` | 3 | `--file` stops on syntax error (earlier commands execute, later don't), interactive REPL continues after error, `--file` stops on runtime error (nonexistent table) |
 | 52 | MERGE | `[e2e][merge]` | 5 | MERGE basic upsert (matched update + unmatched insert), update-only (all matched), insert-only (all unmatched), nonexistent source table error, case insensitivity |
 | 53 | Query Plan Visualization | `[e2e][explain]` `[e2e][commands]` | 4 | EXPLAIN tree connectors, EXPLAIN ANALYZE per-node actual stats, EXPLAIN FORMAT DOT (Graphviz), `.plan`/`.plan dot` commands |
+| 54 | Triggers | `[e2e][trigger]` | 6 | AFTER INSERT trigger fires, BEFORE DELETE trigger fires, DROP TRIGGER, nonexistent table error, case insensitivity, `.triggers` command |
 
 ### Test Categories Summary
 
@@ -301,7 +303,8 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | DML Operations | 20 | INSERT/UPDATE/DELETE, MERGE (upsert, update-only, insert-only) |
 | DDL Operations | 27 | ALTER TABLE, DROP TABLE/INDEX/VIEW, TRUNCATE |
 | Query Plan Visualization | 4 | EXPLAIN tree connectors, per-node stats, DOT export, `.plan` |
-| **Total** | **322** | **1004 assertions — all passing** |
+| Triggers | 6 | CREATE/DROP TRIGGER, BEFORE/AFTER firing, `.triggers` command |
+| **Total** | **328** | **1018 assertions — all passing** |
 
 ### Features Tested
 
@@ -323,6 +326,8 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 - `TRUNCATE TABLE <name>` (clears rows, preserves table structure)
 - `TRUNCATE <name>` (shorthand without TABLE keyword)
 - `MERGE INTO ... USING ... ON ... WHEN MATCHED THEN UPDATE SET ... WHEN NOT MATCHED THEN INSERT VALUES ...` (upsert)
+- `CREATE TRIGGER name BEFORE|AFTER INSERT|UPDATE|DELETE ON table FOR EACH ROW EXECUTE 'action_sql'`
+- `DROP TRIGGER name`
 - `LOAD table 'file'`
 - `.save <file>` (Save current tables to a formatted text file)
 - `.source <file>` (Execute SQL commands from file — stops on error)
@@ -410,5 +415,5 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 ### Test Results
 
 - **SQL Tests** (`tests/test_main.cpp`): 246 test cases — 861 assertions — all passing
-- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 76 test cases — 143 assertions — all passing
-- **Total**: 322 test cases — 1004 assertions — **all passing**
+- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 82 test cases — 157 assertions — all passing
+- **Total**: 328 test cases — 1018 assertions — **all passing**

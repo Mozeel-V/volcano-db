@@ -266,4 +266,30 @@ std::string value_display(const Value& v) {
     return std::get<std::string>(v);
 }
 
+// ───── Trigger management ─────
+
+void Catalog::add_trigger(std::shared_ptr<TriggerDef> t) {
+    triggers.push_back(std::move(t));
+}
+
+bool Catalog::drop_trigger(const std::string& name) {
+    for (auto it = triggers.begin(); it != triggers.end(); ++it) {
+        if ((*it)->name == name) {
+            triggers.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<TriggerDef*> Catalog::get_triggers(const std::string& table, TriggerDef::Event event) {
+    std::vector<TriggerDef*> result;
+    for (auto& t : triggers) {
+        if (t->table_name == table && t->event == event) {
+            result.push_back(t.get());
+        }
+    }
+    return result;
+}
+
 } // namespace storage

@@ -221,6 +221,14 @@ struct MergeStmt {
     std::vector<std::vector<ExprPtr>> insert_values;                  // VALUES (...)
 };
 
+struct CreateTriggerStmt {
+    std::string trigger_name;
+    std::string table_name;
+    int when;    // 0 = BEFORE, 1 = AFTER
+    int event;   // 0 = INSERT, 1 = UPDATE, 2 = DELETE
+    std::string action_sql;  // SQL statement to execute when trigger fires
+};
+
 // ───── Top-level statement ─────
 
 enum class StmtType {
@@ -244,6 +252,8 @@ enum class StmtType {
     ST_DROP_VIEW,
     ST_TRUNCATE,
     ST_MERGE,
+    ST_CREATE_TRIGGER,
+    ST_DROP_TRIGGER,
 };
 
 struct Statement {
@@ -258,7 +268,8 @@ struct Statement {
     std::shared_ptr<LoadStmt> load;
     std::shared_ptr<AlterStmt> alter;
     std::shared_ptr<MergeStmt> merge;
-    std::string drop_name;  // name of table/index/view to drop, or table to truncate
+    std::shared_ptr<CreateTriggerStmt> create_trigger;
+    std::string drop_name;  // name of table/index/view to drop, or table to truncate, or trigger to drop
     bool explain_analyze = false;
     bool explain_dot = false;
 };

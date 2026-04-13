@@ -108,6 +108,13 @@ extern int yylineno;
 "MATCHED"           { return MATCHED; }
 "FORMAT"            { return FORMAT; }
 "DOT"               { return DOT; }
+"TRIGGER"           { return TRIGGER; }
+"BEFORE"            { return BEFORE; }
+"AFTER"             { return AFTER; }
+"FOR"               { return FOR; }
+"EACH"              { return EACH; }
+"ROW"               { return ROW_KW; }
+"EXECUTE"           { return EXECUTE; }
 
     /* ── Operators ── */
 "<="                { return LEQ; }

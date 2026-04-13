@@ -336,6 +336,11 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto* tbl = catalog.get_table(ins.table_name);
                 if (!tbl) throw std::runtime_error("Table not found: " + ins.table_name);
 
+                // Fire BEFORE INSERT triggers
+                for (auto* td : catalog.get_triggers(ins.table_name, storage::TriggerDef::ON_INSERT)) {
+                    if (td->when == storage::TriggerDef::BEFORE) execute_sql(td->action_sql, catalog);
+                }
+
                 size_t inserted = 0;
                 for (auto& val_exprs : ins.values) {
                     if (val_exprs.size() != tbl->schema.size()) {
@@ -355,6 +360,12 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     catalog.update_indexes_on_insert(ins.table_name, tbl->rows.size() - 1);
                     inserted++;
                 }
+
+                // Fire AFTER INSERT triggers
+                for (auto* td : catalog.get_triggers(ins.table_name, storage::TriggerDef::ON_INSERT)) {
+                    if (td->when == storage::TriggerDef::AFTER) execute_sql(td->action_sql, catalog);
+                }
+
                 std::cout << inserted << " row(s) inserted into '" << ins.table_name << "'.\n";
                 break;
             }
@@ -362,6 +373,11 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto& upd = *stmt->update;
                 auto* tbl = catalog.get_table(upd.table_name);
                 if (!tbl) throw std::runtime_error("Table not found: " + upd.table_name);
+
+                // Fire BEFORE UPDATE triggers
+                for (auto* td : catalog.get_triggers(upd.table_name, storage::TriggerDef::ON_UPDATE)) {
+                    if (td->when == storage::TriggerDef::BEFORE) execute_sql(td->action_sql, catalog);
+                }
 
                 // Resolve column indices for assignments
                 std::vector<std::pair<int, ast::ExprPtr>> resolved;
@@ -394,6 +410,11 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     if (idx->table_name == upd.table_name) idx->build(*tbl);
                 }
 
+                // Fire AFTER UPDATE triggers
+                for (auto* td : catalog.get_triggers(upd.table_name, storage::TriggerDef::ON_UPDATE)) {
+                    if (td->when == storage::TriggerDef::AFTER) execute_sql(td->action_sql, catalog);
+                }
+
                 std::cout << updated << " row(s) updated in '" << upd.table_name << "'.\n";
                 break;
             }
@@ -401,6 +422,11 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto& del = *stmt->del;
                 auto* tbl = catalog.get_table(del.table_name);
                 if (!tbl) throw std::runtime_error("Table not found: " + del.table_name);
+
+                // Fire BEFORE DELETE triggers
+                for (auto* td : catalog.get_triggers(del.table_name, storage::TriggerDef::ON_DELETE)) {
+                    if (td->when == storage::TriggerDef::BEFORE) execute_sql(td->action_sql, catalog);
+                }
 
                 size_t before = tbl->rows.size();
                 if (!del.where_clause) {
@@ -422,6 +448,11 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 }
                 for (auto& [key, idx] : catalog.btree_indexes) {
                     if (idx->table_name == del.table_name) idx->build(*tbl);
+                }
+
+                // Fire AFTER DELETE triggers
+                for (auto* td : catalog.get_triggers(del.table_name, storage::TriggerDef::ON_DELETE)) {
+                    if (td->when == storage::TriggerDef::AFTER) execute_sql(td->action_sql, catalog);
                 }
 
                 std::cout << deleted << " row(s) deleted from '" << del.table_name << "'.\n";
@@ -809,6 +840,26 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                           << updated << " row(s) updated, " << inserted << " row(s) inserted.\n";
                 break;
             }
+            case ast::StmtType::ST_CREATE_TRIGGER: {
+                auto& tg = *stmt->create_trigger;
+                if (!catalog.get_table(tg.table_name))
+                    throw std::runtime_error("Table not found: " + tg.table_name);
+                auto td = std::make_shared<storage::TriggerDef>();
+                td->name = tg.trigger_name;
+                td->table_name = tg.table_name;
+                td->when = static_cast<storage::TriggerDef::When>(tg.when);
+                td->event = static_cast<storage::TriggerDef::Event>(tg.event);
+                td->action_sql = tg.action_sql;
+                catalog.add_trigger(td);
+                std::cout << "Trigger '" << tg.trigger_name << "' created on '" << tg.table_name << "'.\n";
+                break;
+            }
+            case ast::StmtType::ST_DROP_TRIGGER: {
+                if (!catalog.drop_trigger(stmt->drop_name))
+                    throw std::runtime_error("Trigger not found: " + stmt->drop_name);
+                std::cout << "Trigger '" << stmt->drop_name << "' dropped.\n";
+                break;
+            }
         }
     } catch (const std::exception& e) {
         std::cout << "Error: " << e.what() << "\n";
@@ -882,6 +933,22 @@ static bool handle_dot_command(const std::string& line, storage::Catalog& catalo
         } else {
             std::cout << "\n── Last Optimized Plan ──\n";
             std::cout << last_explain_plan->to_tree_string();
+        }
+        return true;
+    }
+    if (line == ".triggers") {
+        if (catalog.triggers.empty()) {
+            std::cout << "No triggers defined.\n";
+        } else {
+            const char* timings[] = {"BEFORE", "AFTER"};
+            const char* events[] = {"INSERT", "UPDATE", "DELETE"};
+            std::cout << "Name            | Table           | Timing  | Event   | Action\n";
+            std::cout << "----------------+-----------------+---------+---------+---------------------------\n";
+            for (auto& t : catalog.triggers) {
+                printf("%-15s | %-15s | %-7s | %-7s | %s\n",
+                    t->name.c_str(), t->table_name.c_str(),
+                    timings[t->when], events[t->event], t->action_sql.c_str());
+            }
         }
         return true;
     }

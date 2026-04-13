@@ -1054,3 +1054,91 @@ TEST_CASE("E2E: .plan command", "[e2e][commands]") {
     // .plan dot should show DOT
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("digraph QueryPlan"));
 }
+
+// ─────────── Triggers ───────────
+
+TEST_CASE("E2E: AFTER INSERT trigger fires", "[e2e][trigger]") {
+    std::string output = run_interactive(
+        "CREATE TABLE orders (id INT, item VARCHAR);\n"
+        "CREATE TABLE audit_log (id INT);\n"
+        "CREATE TRIGGER log_insert AFTER INSERT ON orders FOR EACH ROW EXECUTE 'INSERT INTO audit_log VALUES (1)';\n"
+        "INSERT INTO orders VALUES (1, 'widget');\n"
+        "SELECT * FROM audit_log;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Trigger 'log_insert' created"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted into 'orders'"));
+    // audit_log should have 1 row from trigger
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 rows"));
+}
+
+TEST_CASE("E2E: BEFORE DELETE trigger fires", "[e2e][trigger]") {
+    std::string output = run_interactive(
+        "CREATE TABLE items (id INT, name VARCHAR);\n"
+        "CREATE TABLE del_log (id INT);\n"
+        "CREATE TRIGGER before_del BEFORE DELETE ON items FOR EACH ROW EXECUTE 'INSERT INTO del_log VALUES (99)';\n"
+        "INSERT INTO items VALUES (1, 'a'), (2, 'b');\n"
+        "DELETE FROM items WHERE id = 1;\n"
+        "SELECT * FROM del_log;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Trigger 'before_del' created"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("99"));
+}
+
+TEST_CASE("E2E: DROP TRIGGER removes trigger", "[e2e][trigger]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t1 (id INT);\n"
+        "CREATE TABLE t2 (id INT);\n"
+        "CREATE TRIGGER trg1 AFTER INSERT ON t1 FOR EACH ROW EXECUTE 'INSERT INTO t2 VALUES (42)';\n"
+        "DROP TRIGGER trg1;\n"
+        "INSERT INTO t1 VALUES (1);\n"
+        "SELECT * FROM t2;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Trigger 'trg1' dropped"));
+    // After dropping, trigger should not fire — t2 should be empty
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("0 rows"));
+}
+
+TEST_CASE("E2E: CREATE TRIGGER on nonexistent table", "[e2e][trigger]") {
+    std::string output = run_interactive(
+        "CREATE TRIGGER trg_bad AFTER INSERT ON no_such_table FOR EACH ROW EXECUTE 'SELECT 1';\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table not found"));
+}
+
+TEST_CASE("E2E: CREATE TRIGGER case insensitive", "[e2e][trigger]") {
+    std::string output = run_interactive(
+        "CREATE TABLE ci_t (id INT);\n"
+        "CREATE TABLE ci_log (id INT);\n"
+        "create trigger ci_trg after insert on ci_t for each row execute 'INSERT INTO ci_log VALUES (7)';\n"
+        "INSERT INTO ci_t VALUES (1);\n"
+        "SELECT * FROM ci_log;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Trigger 'ci_trg' created"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("7"));
+}
+
+TEST_CASE("E2E: .triggers command", "[e2e][trigger]") {
+    std::string output = run_interactive(
+        "CREATE TABLE emp (id INT, name VARCHAR);\n"
+        "CREATE TABLE log (id INT);\n"
+        "CREATE TRIGGER audit_ins AFTER INSERT ON emp FOR EACH ROW EXECUTE 'INSERT INTO log VALUES (1)';\n"
+        ".triggers\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("audit_ins"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("emp"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("AFTER"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("INSERT"));
+}
+

@@ -93,6 +93,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %token ALTER ADD COLUMN RENAME TO DROP TRUNCATE_KW
 %token MERGE MATCHED
 %token FORMAT DOT
+%token TRIGGER BEFORE AFTER FOR EACH ROW_KW EXECUTE
 %token COUNT SUM AVG MIN MAX
 %token TYPE_INT TYPE_FLOAT TYPE_VARCHAR
 %token CASE WHEN THEN ELSE END
@@ -114,7 +115,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %type <olist>     opt_order_by order_list
 %type <cdlist>    column_def_list
 %type <str_val>   opt_alias data_type agg_name
-%type <ival>      opt_distinct opt_asc_desc join_kind
+%type <ival>      opt_distinct opt_asc_desc join_kind before_after trigger_event
 %type <int_val>   opt_limit opt_offset
 %type <rowlist>   insert_rows
 %type <assignlist> set_list
@@ -304,6 +305,20 @@ statement:
     | DROP VIEW IDENTIFIER {
           auto st = new Statement(); st->type = StmtType::ST_DROP_VIEW;
           st->drop_name = take_str($3); $$ = st;
+      }
+    | DROP TRIGGER IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_DROP_TRIGGER;
+          st->drop_name = take_str($3); $$ = st;
+      }
+    | CREATE TRIGGER IDENTIFIER before_after trigger_event ON IDENTIFIER FOR EACH ROW_KW EXECUTE STRING_LITERAL {
+          auto st = new Statement(); st->type = StmtType::ST_CREATE_TRIGGER;
+          auto tg = std::make_shared<CreateTriggerStmt>();
+          tg->trigger_name = take_str($3);
+          tg->when = $4;
+          tg->event = $5;
+          tg->table_name = take_str($7);
+          tg->action_sql = take_str($12);
+          st->create_trigger = tg; $$ = st;
       }
     | TRUNCATE_KW TABLE IDENTIFIER {
           auto st = new Statement(); st->type = StmtType::ST_TRUNCATE;
@@ -664,6 +679,17 @@ agg_name:
     | AVG   { $$ = strdup("AVG"); }
     | MIN   { $$ = strdup("MIN"); }
     | MAX   { $$ = strdup("MAX"); }
+    ;
+
+before_after:
+      BEFORE { $$ = 0; }
+    | AFTER  { $$ = 1; }
+    ;
+
+trigger_event:
+      INSERT    { $$ = 0; }
+    | UPDATE    { $$ = 1; }
+    | DELETE_KW { $$ = 2; }
     ;
 
 %%
