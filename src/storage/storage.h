@@ -37,6 +37,13 @@ struct ColumnSchema {
 // ───── Row = vector of Values ─────
 using Row = std::vector<Value>;
 
+// ───── Foreign Key definition ─────
+struct ForeignKeyDef {
+    std::string column_name;
+    std::string ref_table;
+    std::string ref_column;
+};
+
 // ───── Table ─────
 class Table {
 public:
@@ -44,6 +51,7 @@ public:
     std::vector<ColumnSchema> schema;
     std::vector<Row> rows;
     std::vector<ast::ExprPtr> check_constraints;  // CHECK expressions
+    std::vector<ForeignKeyDef> foreign_keys;      // FOREIGN KEY references
 
     Table() = default;
     Table(const std::string& name, const std::vector<ColumnSchema>& schema)

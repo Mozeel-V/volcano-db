@@ -306,6 +306,13 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                         }
                     }
                     if (cd.check_expr) tbl->check_constraints.push_back(cd.check_expr);
+                    if (cd.has_fk) {
+                        storage::ForeignKeyDef fk;
+                        fk.column_name = cd.name;
+                        fk.ref_table = cd.fk_ref_table;
+                        fk.ref_column = cd.fk_ref_column;
+                        tbl->foreign_keys.push_back(fk);
+                    }
                     tbl->schema.push_back(cs);
                 }
                 catalog.add_table(tbl);
@@ -406,6 +413,21 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                         }
                     }
 
+                    // Enforce FOREIGN KEY constraints
+                    for (auto& fk : tbl->foreign_keys) {
+                        int fk_idx = tbl->column_index(fk.column_name);
+                        if (fk_idx < 0 || storage::value_is_null(row[fk_idx])) continue;
+                        auto* parent = catalog.get_table(fk.ref_table);
+                        if (!parent) throw std::runtime_error("Referenced table not found: " + fk.ref_table);
+                        int ref_idx = parent->column_index(fk.ref_column);
+                        if (ref_idx < 0) throw std::runtime_error("Referenced column not found: " + fk.ref_column);
+                        bool found = false;
+                        for (auto& prow : parent->rows) {
+                            if (storage::value_equal(prow[ref_idx], row[fk_idx])) { found = true; break; }
+                        }
+                        if (!found) throw std::runtime_error("Foreign key violation: value '" + storage::value_display(row[fk_idx]) + "' not found in " + fk.ref_table + "." + fk.ref_column);
+                    }
+
                     tbl->rows.push_back(std::move(row));
                     catalog.update_indexes_on_insert(ins.table_name, tbl->rows.size() - 1);
                     inserted++;
@@ -478,6 +500,24 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                         }
                     }
 
+                    // Enforce FOREIGN KEY constraints on updated columns
+                    for (auto& fk : tbl->foreign_keys) {
+                        int fk_idx = tbl->column_index(fk.column_name);
+                        if (fk_idx < 0 || storage::value_is_null(row[fk_idx])) continue;
+                        bool was_updated = false;
+                        for (auto& [idx2, expr2] : resolved) { if (idx2 == fk_idx) { was_updated = true; break; } }
+                        if (!was_updated) continue;
+                        auto* parent = catalog.get_table(fk.ref_table);
+                        if (!parent) throw std::runtime_error("Referenced table not found: " + fk.ref_table);
+                        int ref_idx = parent->column_index(fk.ref_column);
+                        if (ref_idx < 0) throw std::runtime_error("Referenced column not found: " + fk.ref_column);
+                        bool found = false;
+                        for (auto& prow : parent->rows) {
+                            if (storage::value_equal(prow[ref_idx], row[fk_idx])) { found = true; break; }
+                        }
+                        if (!found) throw std::runtime_error("Foreign key violation: value '" + storage::value_display(row[fk_idx]) + "' not found in " + fk.ref_table + "." + fk.ref_column);
+                    }
+
                     updated++;
                 }
 
@@ -508,6 +548,34 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 }
 
                 size_t before = tbl->rows.size();
+
+                // Collect rows to delete and check FK references
+                std::vector<size_t> to_delete;
+                for (size_t i = 0; i < tbl->rows.size(); i++) {
+                    if (!del.where_clause || dml_eval_bool(del.where_clause, tbl, tbl->rows[i])) {
+                        to_delete.push_back(i);
+                    }
+                }
+
+                // Check if any child table references the rows being deleted
+                for (size_t di : to_delete) {
+                    auto& drow = tbl->rows[di];
+                    for (auto& [tname, child_tbl] : catalog.tables) {
+                        for (auto& fk : child_tbl->foreign_keys) {
+                            if (fk.ref_table != del.table_name) continue;
+                            int parent_col = tbl->column_index(fk.ref_column);
+                            int child_col = child_tbl->column_index(fk.column_name);
+                            if (parent_col < 0 || child_col < 0) continue;
+                            for (auto& crow : child_tbl->rows) {
+                                if (!storage::value_is_null(crow[child_col]) && storage::value_equal(crow[child_col], drow[parent_col])) {
+                                    throw std::runtime_error("Cannot delete: referenced by foreign key in '" + tname + "'");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Perform deletion
                 if (!del.where_clause) {
                     tbl->rows.clear();
                 } else {

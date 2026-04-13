@@ -170,6 +170,9 @@ struct ColumnDef {
     bool primary_key = false;
     bool unique = false;
     ExprPtr check_expr;
+    bool has_fk = false;
+    std::string fk_ref_table;
+    std::string fk_ref_column;
 };
 
 struct CreateTableStmt {

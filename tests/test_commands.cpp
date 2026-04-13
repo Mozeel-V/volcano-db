@@ -1285,3 +1285,75 @@ TEST_CASE("E2E: Multiple constraints on one column", "[e2e][constraint]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("CHECK constraint violated"));
 }
+
+// ─────────── Foreign Key Constraints ───────────
+
+TEST_CASE("E2E: FK rejects INSERT with invalid reference", "[e2e][constraint][fk]") {
+    std::string output = run_interactive(
+        "CREATE TABLE departments (id INT PRIMARY KEY, name VARCHAR);\n"
+        "INSERT INTO departments VALUES (1, 'Engineering');\n"
+        "CREATE TABLE employees (id INT, dept_id INT REFERENCES departments(id));\n"
+        "INSERT INTO employees VALUES (1, 99);\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Foreign key violation"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("99"));
+}
+
+TEST_CASE("E2E: FK allows INSERT with valid reference", "[e2e][constraint][fk]") {
+    std::string output = run_interactive(
+        "CREATE TABLE depts (id INT PRIMARY KEY, name VARCHAR);\n"
+        "INSERT INTO depts VALUES (1, 'Engineering');\n"
+        "CREATE TABLE emps (id INT, dept_id INT REFERENCES depts(id));\n"
+        "INSERT INTO emps VALUES (1, 1);\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted into 'emps'"));
+}
+
+TEST_CASE("E2E: FK rejects DELETE of referenced parent", "[e2e][constraint][fk]") {
+    std::string output = run_interactive(
+        "CREATE TABLE parent_t (id INT PRIMARY KEY, val VARCHAR);\n"
+        "INSERT INTO parent_t VALUES (1, 'a');\n"
+        "CREATE TABLE child_t (id INT, pid INT REFERENCES parent_t(id));\n"
+        "INSERT INTO child_t VALUES (10, 1);\n"
+        "DELETE FROM parent_t WHERE id = 1;\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Cannot delete: referenced by foreign key"));
+}
+
+TEST_CASE("E2E: FK rejects UPDATE to invalid reference", "[e2e][constraint][fk]") {
+    std::string output = run_interactive(
+        "CREATE TABLE colors (id INT PRIMARY KEY, name VARCHAR);\n"
+        "INSERT INTO colors VALUES (1, 'red');\n"
+        "CREATE TABLE items (id INT, color_id INT REFERENCES colors(id));\n"
+        "INSERT INTO items VALUES (1, 1);\n"
+        "UPDATE items SET color_id = 999 WHERE id = 1;\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Foreign key violation"));
+}
+
+TEST_CASE("E2E: FK allows NULL values", "[e2e][constraint][fk]") {
+    std::string output = run_interactive(
+        "CREATE TABLE ref_t (id INT PRIMARY KEY, val VARCHAR);\n"
+        "INSERT INTO ref_t VALUES (1, 'x');\n"
+        "CREATE TABLE fk_null (id INT, ref_id INT REFERENCES ref_t(id));\n"
+        "INSERT INTO fk_null VALUES (1, NULL);\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted into 'fk_null'"));
+}
+
+TEST_CASE("E2E: FK case insensitive", "[e2e][constraint][fk]") {
+    std::string output = run_interactive(
+        "create table pkci (id int primary key, name varchar);\n"
+        "insert into pkci values (1, 'x');\n"
+        "create table fkci (id int, pid int references pkci(id));\n"
+        "insert into fkci values (1, 1);\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 'fkci' created"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted into 'fkci'"));
+}
