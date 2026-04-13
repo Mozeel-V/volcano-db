@@ -24,7 +24,7 @@ static std::string take_str(char* s) { std::string r(s); free(s); return r; }
 static RawExprList make_elist() { RawExprList l = {nullptr,0,0}; return l; }
 static RawTRefList make_tlist() { RawTRefList l = {nullptr,0,0}; return l; }
 static RawOrderList make_olist(){ RawOrderList l = {0,0,nullptr,nullptr}; return l; }
-static RawColDefList make_cdlist(){ RawColDefList l = {0,0,nullptr,nullptr}; return l; }
+static RawColDefList make_cdlist(){ RawColDefList l = {0,0,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr}; return l; }
 
 static void elist_push(RawExprList& l, Expr* e) {
     if (l.count >= l.cap) { l.cap = l.cap ? l.cap*2 : 4; l.items = (Expr**)realloc(l.items, l.cap*sizeof(Expr*)); }
@@ -38,9 +38,24 @@ static void olist_push(RawOrderList& l, Expr* e, int asc) {
     if (l.count >= l.cap) { l.cap = l.cap ? l.cap*2 : 4; l.exprs = (Expr**)realloc(l.exprs, l.cap*sizeof(Expr*)); l.ascs = (int*)realloc(l.ascs, l.cap*sizeof(int)); }
     l.exprs[l.count] = e; l.ascs[l.count] = asc; l.count++;
 }
-static void cdlist_push(RawColDefList& l, char* n, char* t) {
-    if (l.count >= l.cap) { l.cap = l.cap ? l.cap*2 : 4; l.names = (char**)realloc(l.names, l.cap*sizeof(char*)); l.types = (char**)realloc(l.types, l.cap*sizeof(char*)); }
-    l.names[l.count] = n; l.types[l.count] = t; l.count++;
+static void cdlist_push(RawColDefList& l, char* n, char* t, RawConstraints c) {
+    if (l.count >= l.cap) {
+        l.cap = l.cap ? l.cap*2 : 4;
+        l.names = (char**)realloc(l.names, l.cap*sizeof(char*));
+        l.types = (char**)realloc(l.types, l.cap*sizeof(char*));
+        l.not_null = (int*)realloc(l.not_null, l.cap*sizeof(int));
+        l.primary_key = (int*)realloc(l.primary_key, l.cap*sizeof(int));
+        l.is_unique = (int*)realloc(l.is_unique, l.cap*sizeof(int));
+        l.defaults = (ast::Expr**)realloc(l.defaults, l.cap*sizeof(ast::Expr*));
+        l.checks = (ast::Expr**)realloc(l.checks, l.cap*sizeof(ast::Expr*));
+    }
+    l.names[l.count] = n; l.types[l.count] = t;
+    l.not_null[l.count] = c.not_null || c.primary_key;  // PK implies NOT NULL
+    l.primary_key[l.count] = c.primary_key;
+    l.is_unique[l.count] = c.is_unique || c.primary_key;  // PK implies UNIQUE
+    l.defaults[l.count] = c.default_val;
+    l.checks[l.count] = c.check_expr;
+    l.count++;
 }
 
 static RawRowList make_rlist() { RawRowList l = {nullptr,0,0}; return l; }
@@ -79,6 +94,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
     RawColDefList    cdlist;
     RawRowList       rowlist;
     RawAssignList    assignlist;
+    RawConstraints   constraints;
     int              ival;
 }
 
@@ -94,6 +110,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %token MERGE MATCHED
 %token FORMAT DOT
 %token TRIGGER BEFORE AFTER FOR EACH ROW_KW EXECUTE
+%token DEFAULT PRIMARY KEY UNIQUE CHECK_KW REFERENCES
 %token COUNT SUM AVG MIN MAX
 %token TYPE_INT TYPE_FLOAT TYPE_VARCHAR
 %token CASE WHEN THEN ELSE END
@@ -116,6 +133,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %type <cdlist>    column_def_list
 %type <str_val>   opt_alias data_type agg_name
 %type <ival>      opt_distinct opt_asc_desc join_kind before_after trigger_event
+%type <constraints> col_constraints
 %type <int_val>   opt_limit opt_offset
 %type <rowlist>   insert_rows
 %type <assignlist> set_list
@@ -159,10 +177,17 @@ statement:
           auto ct = std::make_shared<CreateTableStmt>();
           ct->table_name = take_str($3);
           for (int i = 0; i < $5.count; i++) {
-              ColumnDef cd; cd.name = take_str($5.names[i]); cd.data_type = take_str($5.types[i]);
+              ColumnDef cd;
+              cd.name = take_str($5.names[i]);
+              cd.data_type = take_str($5.types[i]);
+              cd.not_null = $5.not_null[i];
+              cd.primary_key = $5.primary_key[i];
+              cd.unique = $5.is_unique[i];
+              if ($5.defaults[i]) { cd.has_default = true; cd.default_value = wrap($5.defaults[i]); }
+              if ($5.checks[i]) { cd.check_expr = wrap($5.checks[i]); }
               ct->columns.push_back(cd);
           }
-          free($5.names); free($5.types);
+          free($5.names); free($5.types); free($5.not_null); free($5.primary_key); free($5.is_unique); free($5.defaults); free($5.checks);
           st->create_table = ct; $$ = st;
       }
     | CREATE INDEX IDENTIFIER ON IDENTIFIER '(' IDENTIFIER ')' {
@@ -508,11 +533,33 @@ opt_offset: /* empty */ { $$ = 0; }  | OFFSET INT_LITERAL { $$ = $2; } ;
 
 /* ─── Column definitions ─── */
 column_def_list:
-      IDENTIFIER data_type {
-          $$ = make_cdlist(); cdlist_push($$, $1, $2);
+      IDENTIFIER data_type col_constraints {
+          $$ = make_cdlist(); cdlist_push($$, $1, $2, $3);
       }
-    | column_def_list ',' IDENTIFIER data_type {
-          $$ = $1; cdlist_push($$, $3, $4);
+    | column_def_list ',' IDENTIFIER data_type col_constraints {
+          $$ = $1; cdlist_push($$, $3, $4, $5);
+      }
+    ;
+
+col_constraints:
+      /* empty */ {
+          $$.not_null = 0; $$.primary_key = 0; $$.is_unique = 0;
+          $$.default_val = nullptr; $$.check_expr = nullptr;
+      }
+    | col_constraints NOT NULL_KW {
+          $$ = $1; $$.not_null = 1;
+      }
+    | col_constraints DEFAULT expr_primary {
+          $$ = $1; $$.default_val = $3;
+      }
+    | col_constraints PRIMARY KEY {
+          $$ = $1; $$.primary_key = 1;
+      }
+    | col_constraints UNIQUE {
+          $$ = $1; $$.is_unique = 1;
+      }
+    | col_constraints CHECK_KW '(' expr ')' {
+          $$ = $1; $$.check_expr = $4;
       }
     ;
 

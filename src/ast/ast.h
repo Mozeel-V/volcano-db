@@ -164,11 +164,18 @@ struct SelectStmt {
 struct ColumnDef {
     std::string name;
     std::string data_type;
+    bool not_null = false;
+    bool has_default = false;
+    ExprPtr default_value;
+    bool primary_key = false;
+    bool unique = false;
+    ExprPtr check_expr;
 };
 
 struct CreateTableStmt {
     std::string table_name;
     std::vector<ColumnDef> columns;
+    std::vector<ExprPtr> table_checks;
 };
 
 struct CreateIndexStmt {

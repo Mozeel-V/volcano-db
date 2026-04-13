@@ -115,6 +115,12 @@ extern int yylineno;
 "EACH"              { return EACH; }
 "ROW"               { return ROW_KW; }
 "EXECUTE"           { return EXECUTE; }
+"DEFAULT"           { return DEFAULT; }
+"PRIMARY"           { return PRIMARY; }
+"KEY"               { return KEY; }
+"UNIQUE"            { return UNIQUE; }
+"CHECK"             { return CHECK_KW; }
+"REFERENCES"        { return REFERENCES; }
 
     /* ── Operators ── */
 "<="                { return LEQ; }

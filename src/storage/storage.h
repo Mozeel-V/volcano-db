@@ -13,6 +13,8 @@
 
 namespace ast {
 struct SelectStmt;
+struct Expr;
+using ExprPtr = std::shared_ptr<Expr>;
 }
 
 namespace storage {
@@ -25,6 +27,11 @@ enum class DataType { INT, FLOAT, VARCHAR };
 struct ColumnSchema {
     std::string name;
     DataType type;
+    bool not_null = false;
+    bool primary_key = false;
+    bool is_unique = false;
+    bool has_default = false;
+    Value default_value;        // used when has_default == true
 };
 
 // ───── Row = vector of Values ─────
@@ -36,6 +43,7 @@ public:
     std::string name;
     std::vector<ColumnSchema> schema;
     std::vector<Row> rows;
+    std::vector<ast::ExprPtr> check_constraints;  // CHECK expressions
 
     Table() = default;
     Table(const std::string& name, const std::vector<ColumnSchema>& schema)

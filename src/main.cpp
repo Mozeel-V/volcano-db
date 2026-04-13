@@ -287,12 +287,35 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto tbl = std::make_shared<storage::Table>();
                 tbl->name = ct.table_name;
                 for (auto& cd : ct.columns) {
-                    storage::DataType dt = storage::DataType::VARCHAR;
-                    if (cd.data_type == "INT") dt = storage::DataType::INT;
-                    else if (cd.data_type == "FLOAT") dt = storage::DataType::FLOAT;
-                    tbl->schema.push_back({cd.name, dt});
+                    storage::ColumnSchema cs;
+                    cs.name = cd.name;
+                    cs.type = storage::DataType::VARCHAR;
+                    if (cd.data_type == "INT") cs.type = storage::DataType::INT;
+                    else if (cd.data_type == "FLOAT") cs.type = storage::DataType::FLOAT;
+                    cs.not_null = cd.not_null;
+                    cs.primary_key = cd.primary_key;
+                    cs.is_unique = cd.unique;
+                    if (cd.has_default && cd.default_value) {
+                        cs.has_default = true;
+                        auto& e = *cd.default_value;
+                        switch (e.type) {
+                            case ast::ExprType::LITERAL_INT:    cs.default_value = e.int_val; break;
+                            case ast::ExprType::LITERAL_FLOAT:  cs.default_value = e.float_val; break;
+                            case ast::ExprType::LITERAL_STRING: cs.default_value = e.str_val; break;
+                            default: cs.default_value = std::monostate{}; break;
+                        }
+                    }
+                    if (cd.check_expr) tbl->check_constraints.push_back(cd.check_expr);
+                    tbl->schema.push_back(cs);
                 }
                 catalog.add_table(tbl);
+                // Auto-create BTree index for PRIMARY KEY columns
+                for (auto& cs : tbl->schema) {
+                    if (cs.primary_key) {
+                        std::string idx_name = "pk_" + ct.table_name + "_" + cs.name;
+                        catalog.create_index(idx_name, ct.table_name, cs.name, false);
+                    }
+                }
                 std::cout << "Table '" << ct.table_name << "' created.\n";
                 break;
             }
@@ -356,6 +379,33 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                             default:                            row.push_back(std::monostate{}); break;
                         }
                     }
+
+                    // Enforce NOT NULL constraints
+                    for (size_t i = 0; i < tbl->schema.size(); i++) {
+                        if (tbl->schema[i].not_null && storage::value_is_null(row[i])) {
+                            throw std::runtime_error("NOT NULL constraint violated for column '" + tbl->schema[i].name + "'");
+                        }
+                    }
+
+                    // Enforce UNIQUE / PRIMARY KEY constraints
+                    for (size_t i = 0; i < tbl->schema.size(); i++) {
+                        if (tbl->schema[i].is_unique || tbl->schema[i].primary_key) {
+                            if (storage::value_is_null(row[i])) continue;  // NULL is allowed in UNIQUE
+                            for (auto& existing : tbl->rows) {
+                                if (storage::value_equal(existing[i], row[i])) {
+                                    throw std::runtime_error("UNIQUE constraint violated for column '" + tbl->schema[i].name + "': duplicate value '" + storage::value_display(row[i]) + "'");
+                                }
+                            }
+                        }
+                    }
+
+                    // Enforce CHECK constraints
+                    for (auto& chk : tbl->check_constraints) {
+                        if (!dml_eval_bool(chk, tbl, row)) {
+                            throw std::runtime_error("CHECK constraint violated");
+                        }
+                    }
+
                     tbl->rows.push_back(std::move(row));
                     catalog.update_indexes_on_insert(ins.table_name, tbl->rows.size() - 1);
                     inserted++;
@@ -391,7 +441,8 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 if ((int)resolved.size() != (int)upd.assignments.size()) break;
 
                 size_t updated = 0;
-                for (auto& row : tbl->rows) {
+                for (size_t ri = 0; ri < tbl->rows.size(); ri++) {
+                    auto& row = tbl->rows[ri];
                     if (upd.where_clause && !dml_eval_bool(upd.where_clause, tbl, row))
                         continue;
 
@@ -399,6 +450,34 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     for (auto& [idx, expr] : resolved) {
                         row[idx] = dml_eval(expr, tbl, row);
                     }
+
+                    // Enforce NOT NULL on updated columns
+                    for (auto& [idx, expr] : resolved) {
+                        if (tbl->schema[idx].not_null && storage::value_is_null(row[idx])) {
+                            throw std::runtime_error("NOT NULL constraint violated for column '" + tbl->schema[idx].name + "'");
+                        }
+                    }
+
+                    // Enforce UNIQUE / PRIMARY KEY on updated columns
+                    for (auto& [idx, expr] : resolved) {
+                        if (tbl->schema[idx].is_unique || tbl->schema[idx].primary_key) {
+                            if (storage::value_is_null(row[idx])) continue;
+                            for (size_t oi = 0; oi < tbl->rows.size(); oi++) {
+                                if (oi == ri) continue;
+                                if (storage::value_equal(tbl->rows[oi][idx], row[idx])) {
+                                    throw std::runtime_error("UNIQUE constraint violated for column '" + tbl->schema[idx].name + "'");
+                                }
+                            }
+                        }
+                    }
+
+                    // Enforce CHECK constraints
+                    for (auto& chk : tbl->check_constraints) {
+                        if (!dml_eval_bool(chk, tbl, row)) {
+                            throw std::runtime_error("CHECK constraint violated");
+                        }
+                    }
+
                     updated++;
                 }
 

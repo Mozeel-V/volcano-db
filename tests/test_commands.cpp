@@ -1142,3 +1142,146 @@ TEST_CASE("E2E: .triggers command", "[e2e][trigger]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("INSERT"));
 }
 
+// ─────────── Constraints ───────────
+
+TEST_CASE("E2E: NOT NULL rejects null INSERT", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t1 (id INT NOT NULL, name VARCHAR);\n"
+        "INSERT INTO t1 VALUES (NULL, 'alice');\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("NOT NULL constraint violated for column 'id'"));
+}
+
+TEST_CASE("E2E: NOT NULL allows non-null INSERT", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t2 (id INT NOT NULL, name VARCHAR);\n"
+        "INSERT INTO t2 VALUES (1, 'alice');\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
+}
+
+TEST_CASE("E2E: PRIMARY KEY rejects duplicate", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE pk_t (id INT PRIMARY KEY, name VARCHAR);\n"
+        "INSERT INTO pk_t VALUES (1, 'alice');\n"
+        "INSERT INTO pk_t VALUES (1, 'bob');\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("UNIQUE constraint violated for column 'id'"));
+}
+
+TEST_CASE("E2E: PRIMARY KEY rejects null", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE pk_n (id INT PRIMARY KEY, name VARCHAR);\n"
+        "INSERT INTO pk_n VALUES (NULL, 'alice');\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("NOT NULL constraint violated"));
+}
+
+TEST_CASE("E2E: UNIQUE rejects duplicate", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE uq_t (id INT, email VARCHAR UNIQUE);\n"
+        "INSERT INTO uq_t VALUES (1, 'a@b.com');\n"
+        "INSERT INTO uq_t VALUES (2, 'a@b.com');\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("UNIQUE constraint violated for column 'email'"));
+}
+
+TEST_CASE("E2E: UNIQUE allows multiple NULLs", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE uq_n (id INT, email VARCHAR UNIQUE);\n"
+        "INSERT INTO uq_n VALUES (1, NULL);\n"
+        "INSERT INTO uq_n VALUES (2, NULL);\n"
+        "SELECT COUNT(*) FROM uq_n;\n"
+        ".quit\n"
+    );
+    // Both inserts should succeed — NULL is not a duplicate
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("2"));
+}
+
+TEST_CASE("E2E: UPDATE violating NOT NULL rejected", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE upd_nn (id INT NOT NULL, name VARCHAR);\n"
+        "INSERT INTO upd_nn VALUES (1, 'alice');\n"
+        "UPDATE upd_nn SET id = NULL WHERE name = 'alice';\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("NOT NULL constraint violated"));
+}
+
+TEST_CASE("E2E: UPDATE violating UNIQUE rejected", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE upd_uq (id INT PRIMARY KEY, name VARCHAR);\n"
+        "INSERT INTO upd_uq VALUES (1, 'alice');\n"
+        "INSERT INTO upd_uq VALUES (2, 'bob');\n"
+        "UPDATE upd_uq SET id = 1 WHERE name = 'bob';\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("UNIQUE constraint violated"));
+}
+
+TEST_CASE("E2E: CHECK rejects invalid INSERT", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE chk_t (qty INT CHECK (qty > 0), name VARCHAR);\n"
+        "INSERT INTO chk_t VALUES (0, 'bad');\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("CHECK constraint violated"));
+}
+
+TEST_CASE("E2E: CHECK allows valid INSERT", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE chk_ok (qty INT CHECK (qty > 0), name VARCHAR);\n"
+        "INSERT INTO chk_ok VALUES (5, 'good');\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
+}
+
+TEST_CASE("E2E: UPDATE violating CHECK rejected", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE chk_u (qty INT CHECK (qty > 0), name VARCHAR);\n"
+        "INSERT INTO chk_u VALUES (5, 'ok');\n"
+        "UPDATE chk_u SET qty = 0 WHERE name = 'ok';\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("CHECK constraint violated"));
+}
+
+TEST_CASE("E2E: Constraints case insensitive", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "create table ci_con (id int not null primary key, name varchar unique);\n"
+        "INSERT INTO ci_con VALUES (1, 'alice');\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 'ci_con' created"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
+}
+
+TEST_CASE("E2E: PK auto-creates index", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE pk_idx (id INT PRIMARY KEY, val VARCHAR);\n"
+        "INSERT INTO pk_idx VALUES (1, 'a');\n"
+        "INSERT INTO pk_idx VALUES (2, 'b');\n"
+        "EXPLAIN SELECT * FROM pk_idx WHERE id = 1;\n"
+        ".quit\n"
+    );
+    // PK should auto-create a btree index → optimizer should use IndexScan
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("IndexScan"));
+}
+
+TEST_CASE("E2E: Multiple constraints on one column", "[e2e][constraint]") {
+    std::string output = run_interactive(
+        "CREATE TABLE multi (id INT NOT NULL UNIQUE CHECK (id > 0), name VARCHAR);\n"
+        "INSERT INTO multi VALUES (1, 'ok');\n"
+        "INSERT INTO multi VALUES (0, 'bad');\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("CHECK constraint violated"));
+}

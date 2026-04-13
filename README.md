@@ -290,6 +290,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 52 | MERGE | `[e2e][merge]` | 5 | MERGE basic upsert (matched update + unmatched insert), update-only (all matched), insert-only (all unmatched), nonexistent source table error, case insensitivity |
 | 53 | Query Plan Visualization | `[e2e][explain]` `[e2e][commands]` | 4 | EXPLAIN tree connectors, EXPLAIN ANALYZE per-node actual stats, EXPLAIN FORMAT DOT (Graphviz), `.plan`/`.plan dot` commands |
 | 54 | Triggers | `[e2e][trigger]` | 6 | AFTER INSERT trigger fires, BEFORE DELETE trigger fires, DROP TRIGGER, nonexistent table error, case insensitivity, `.triggers` command |
+| 55 | Constraints | `[e2e][constraint]` | 14 | NOT NULL reject/allow, PK reject duplicate/null/auto-index, UNIQUE reject/allow-null, UPDATE NOT NULL/UNIQUE, CHECK reject/allow/update, case insensitivity, multiple constraints |
 
 ### Test Categories Summary
 
@@ -304,7 +305,8 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | DDL Operations | 27 | ALTER TABLE, DROP TABLE/INDEX/VIEW, TRUNCATE |
 | Query Plan Visualization | 4 | EXPLAIN tree connectors, per-node stats, DOT export, `.plan` |
 | Triggers | 6 | CREATE/DROP TRIGGER, BEFORE/AFTER firing, `.triggers` command |
-| **Total** | **328** | **1018 assertions — all passing** |
+| Constraints | 14 | NOT NULL, PRIMARY KEY, UNIQUE, CHECK, auto-index, UPDATE enforcement |
+| **Total** | **342** | **1035 assertions — all passing** |
 
 ### Features Tested
 
@@ -328,6 +330,22 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 - `MERGE INTO ... USING ... ON ... WHEN MATCHED THEN UPDATE SET ... WHEN NOT MATCHED THEN INSERT VALUES ...` (upsert)
 - `CREATE TRIGGER name BEFORE|AFTER INSERT|UPDATE|DELETE ON table FOR EACH ROW EXECUTE 'action_sql'`
 - `DROP TRIGGER name`
+
+**Column constraints** (inline with CREATE TABLE):
+- `NOT NULL` — rejects null values on INSERT/UPDATE
+- `DEFAULT <value>` — provides fallback when column value is omitted
+- `PRIMARY KEY` — implies NOT NULL + UNIQUE, auto-creates BTree index
+- `UNIQUE` — rejects duplicate values (multiple NULLs allowed per SQL standard)
+- `CHECK (<expr>)` — enforces arbitrary boolean expression on INSERT/UPDATE
+
+```sql
+CREATE TABLE users (
+    id INT PRIMARY KEY,
+    email VARCHAR UNIQUE NOT NULL,
+    age INT CHECK (age > 0),
+    role VARCHAR DEFAULT 'user'
+);
+```
 - `LOAD table 'file'`
 - `.save <file>` (Save current tables to a formatted text file)
 - `.source <file>` (Execute SQL commands from file — stops on error)
@@ -415,5 +433,5 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 ### Test Results
 
 - **SQL Tests** (`tests/test_main.cpp`): 246 test cases — 861 assertions — all passing
-- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 82 test cases — 157 assertions — all passing
-- **Total**: 328 test cases — 1018 assertions — **all passing**
+- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 96 test cases — 174 assertions — all passing
+- **Total**: 342 test cases — 1035 assertions — **all passing**
