@@ -2,6 +2,8 @@
 #include <vector>
 #include <string>
 #include <chrono>
+#include <unordered_map>
+#include <unordered_set>
 #include "planner/planner.h"
 #include "storage/storage.h"
 
@@ -19,6 +21,7 @@ struct ExecStats {
     const EvalCtx* outer_ctx = nullptr;
     double exec_time_ms = 0;
     std::unordered_map<const ast::Expr*, storage::Value> subquery_cache;
+    std::unordered_map<const ast::Expr*, std::unordered_set<std::string>> in_subquery_cache;
 };
 
 struct ExecResult {

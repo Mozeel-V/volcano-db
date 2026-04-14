@@ -1439,6 +1439,22 @@ TEST_CASE("E2E: Execute IN Subquery", "[e2e][subquery]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("20"));
 }
 
+// --- Benchmark: Hash Join IN Optimization --
+TEST_CASE("E2E: IN Subquery Hash Performance", "[e2e][benchmark][subquery]") {
+    // Generate inner table (10 rows) and outer table (100 rows)
+    std::string script = 
+        ".generate 100\n" // creates employees (100) and depts (10)
+        "EXPLAIN ANALYZE SELECT * FROM employees WHERE department_id IN (SELECT id FROM departments WHERE name LIKE '%A%');\n"
+        ".quit\n";
+    std::string output = run_interactive(script);
+    
+    // With hash-optimization, the subquery should execute EXACTLY ONCE and cache it! 
+    // The query plan output prints execution statistics: 
+    // We should see `Subqueries executed: 1`
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Subqueries executed: 1"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Subqueries cached:")); // Should be > 0 (actually 100 times)
+}
+
 TEST_CASE("E2E: Scalar Subquery", "[e2e][subquery]") {
     std::string output = run_interactive(
         "CREATE TABLE t1 (id INT, val INT);\n"

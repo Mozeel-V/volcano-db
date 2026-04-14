@@ -267,6 +267,8 @@ static void print_result(const executor::ExecResult& res, bool show_stats) {
         std::cout << "  Rows scanned:      " << res.stats.rows_scanned << "\n";
         std::cout << "  Rows filtered:     " << res.stats.rows_filtered << "\n";
         std::cout << "  Join comparisons:  " << res.stats.join_comparisons << "\n";
+        std::cout << "  Subqueries exec:   " << res.stats.subqueries_executed << "\n";
+        std::cout << "  Subqueries cached: " << res.stats.subqueries_cached << "\n";
         std::cout << "  Rows produced:     " << res.stats.rows_produced << "\n";
         std::cout << "  Execution time:    " << std::fixed << std::setprecision(3)
                   << res.stats.exec_time_ms << " ms\n";
@@ -648,6 +650,8 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                             std::cout << "  Rows scanned:     " << result.stats.rows_scanned << "\n";
                             std::cout << "  Rows filtered:    " << result.stats.rows_filtered << "\n";
                             std::cout << "  Join comparisons: " << result.stats.join_comparisons << "\n";
+                            std::cout << "  Subqueries executed: " << result.stats.subqueries_executed << "\n";
+                            std::cout << "  Subqueries cached:   " << result.stats.subqueries_cached << "\n";
                             std::cout << "  Rows produced:    " << result.stats.rows_produced << "\n";
                             std::cout << "  Execution time:   " << std::fixed << std::setprecision(3)
                                       << result.stats.exec_time_ms << " ms\n";

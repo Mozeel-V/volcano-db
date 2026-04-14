@@ -193,10 +193,34 @@ static Value eval_expr(const ExprPtr& expr, const EvalCtx& ctx) {
             Value lv = eval_expr(expr->left, ctx);
             if (expr->subquery) {
                 if (!ctx.catalog) return (int64_t)0;
+                
+                // 1. Check cache first!
+                if (ctx.stats && ctx.stats->in_subquery_cache.count(expr.get())) {
+                    ctx.stats->subqueries_cached++;
+                    std::string lkey = value_display(lv);
+                    return (int64_t)(ctx.stats->in_subquery_cache[expr.get()].count(lkey) ? 1 : 0);
+                }
+
                 ctx.accessed_outer = false;
                 auto plan = planner::build_logical_plan(*expr->subquery, *ctx.catalog);
                 if (ctx.stats) ctx.stats->subqueries_executed++;
                 auto res = execute(plan, *ctx.catalog, &ctx);
+
+                // 2. If uncorrelated: build Hash Set and Cache!
+                if (!ctx.accessed_outer && ctx.stats) {
+                    std::unordered_set<std::string> val_set;
+                    for (const auto& row : res.rows) {
+                        if (!row.empty()) {
+                            val_set.insert(value_display(row[0]));
+                        }
+                    }
+                    ctx.stats->in_subquery_cache[expr.get()] = std::move(val_set);
+                    
+                    std::string lkey = value_display(lv);
+                    return (int64_t)(ctx.stats->in_subquery_cache[expr.get()].count(lkey) ? 1 : 0);
+                }
+
+                // 3. If correlated: just evaluate sequentially
                 Value in_result = (int64_t)0;
                 for (const auto& row : res.rows) {
                     if (!row.empty() && value_equal(lv, row[0])) {
@@ -204,9 +228,6 @@ static Value eval_expr(const ExprPtr& expr, const EvalCtx& ctx) {
                         break;
                     }
                 }
-                // We cannot cache the execution result for IN_EXPR directly using Value since it depends on lv
-                // But we can cache it. Wait, uncorrelated IN_EXPR is optimized via Hash lookup in Phase 3.
-                // For now, if accessed_outer is true, we just pass without caching here.
                 return in_result;
             } else {
                 for (auto& item : expr->in_list) {
