@@ -19,7 +19,6 @@ using ExprPtr = std::shared_ptr<Expr>;
 
 namespace storage {
 
-// ───── Value type: each cell can be int, double, string, or null ─────
 using Value = std::variant<std::monostate, int64_t, double, std::string>;
 
 enum class DataType { INT, FLOAT, VARCHAR };
@@ -34,17 +33,14 @@ struct ColumnSchema {
     Value default_value;        // used when has_default == true
 };
 
-// ───── Row = vector of Values ─────
 using Row = std::vector<Value>;
 
-// ───── Foreign Key definition ─────
 struct ForeignKeyDef {
     std::string column_name;
     std::string ref_table;
     std::string ref_column;
 };
 
-// ───── Table ─────
 class Table {
 public:
     std::string name;
@@ -70,7 +66,6 @@ public:
     size_t distinct_values(const std::string& col) const;
 };
 
-// ───── Hash Index ─────
 class HashIndex {
 public:
     std::string table_name;
@@ -83,7 +78,6 @@ public:
     std::vector<size_t> lookup_str(const std::string& key) const;
 };
 
-// ───── B-Tree Index (ordered, supports range queries) ─────
 class BTreeIndex {
 public:
     std::string table_name;
@@ -107,7 +101,6 @@ public:
     std::vector<size_t> lookup_gte(const Value& val) const;
 };
 
-// ───── Index entry in catalog ─────
 enum class IndexType { HASH, BTREE };
 
 struct IndexEntry {
@@ -119,7 +112,6 @@ struct IndexEntry {
     std::shared_ptr<BTreeIndex> btree_idx;
 };
 
-// ───── Trigger definition ─────
 struct TriggerDef {
     std::string name;
     std::string table_name;
@@ -128,7 +120,6 @@ struct TriggerDef {
     std::vector<std::string> action_sqls;
 };
 
-// ───── Catalog ─────
 class Catalog {
 public:
     struct ViewDef {
@@ -170,7 +161,6 @@ public:
     std::vector<TriggerDef*> get_triggers(const std::string& table, TriggerDef::Event event);
 };
 
-// ───── Value helpers ─────
 bool value_is_null(const Value& v);
 int64_t value_to_int(const Value& v);
 double value_to_double(const Value& v);

@@ -162,8 +162,6 @@ input:
     | statement      { g_parsed_stmt = std::shared_ptr<Statement>($1); }
     ;
 
-/* ═══════ Statements ═══════ */
-
 statement:
       select_stmt {
           auto st = new Statement(); st->type = StmtType::ST_SELECT;
@@ -382,12 +380,12 @@ statement:
           mg->target_table = take_str($3);
           mg->source_table = take_str($5);
           mg->on_condition = wrap($7);
-          /* WHEN MATCHED → SET assignments ($13) */
+          /* WHEN MATCHED -> SET assignments ($13) */
           for (int i = 0; i < $13.count; i++) {
               mg->update_assignments.emplace_back(take_str($13.cols[i]), wrap($13.vals[i]));
           }
           free($13.cols); free($13.vals);
-          /* WHEN NOT MATCHED → INSERT VALUES ($20) */
+          /* WHEN NOT MATCHED -> INSERT VALUES ($20) */
           for (int r = 0; r < $20.count; r++) {
               std::vector<ExprPtr> row;
               for (int c = 0; c < $20.rows[r].count; c++) {
@@ -424,8 +422,6 @@ set_list:
           alist_push($$, $3, $5);
       }
     ;
-
-/* ═══════ SELECT ═══════ */
 
 select_stmt:
       select_body         { $$ = $1; }
@@ -470,7 +466,6 @@ select_body:
 
 opt_distinct: /* empty */ { $$ = 0; } | DISTINCT { $$ = 1; } ;
 
-/* ─── SELECT list ─── */
 select_list:
       select_item                   { $$ = make_elist(); elist_push($$, $1); }
     | select_list ',' select_item   { $$ = $1; elist_push($$, $3); }
@@ -486,7 +481,6 @@ opt_alias:
     | IDENTIFIER    { $$ = $1; }
     ;
 
-/* ─── FROM ─── */
 from_list:
       table_ref                 { $$ = make_tlist(); tlist_push($$, $1); }
     | from_list ',' table_ref   { $$ = $1; tlist_push($$, $3); }
@@ -528,7 +522,6 @@ join_kind:
     | FULL OUTER    { $$ = (int)JoinType::JT_FULL; }
     ;
 
-/* ─── Clauses ─── */
 opt_where:   /* empty */ { $$ = nullptr; } | WHERE expr   { $$ = $2; } ;
 opt_having:  /* empty */ { $$ = nullptr; } | HAVING expr  { $$ = $2; } ;
 
@@ -552,7 +545,6 @@ opt_asc_desc: /* empty */ { $$ = 1; } | ASC { $$ = 1; } | DESC { $$ = 0; } ;
 opt_limit:  /* empty */ { $$ = -1; } | LIMIT INT_LITERAL  { $$ = $2; } ;
 opt_offset: /* empty */ { $$ = 0; }  | OFFSET INT_LITERAL { $$ = $2; } ;
 
-/* ─── Column definitions ─── */
 column_def_list:
       IDENTIFIER data_type col_constraints {
           $$ = make_cdlist(); cdlist_push($$, $1, $2, $3);
@@ -595,13 +587,10 @@ data_type:
     | TYPE_VARCHAR '(' INT_LITERAL ')' { $$ = strdup("VARCHAR"); }
     ;
 
-/* ─── expr list ─── */
 expr_list:
       expr                  { $$ = make_elist(); elist_push($$, $1); }
     | expr_list ',' expr    { $$ = $1; elist_push($$, $3); }
     ;
-
-/* ═══════ Expressions ═══════ */
 
 expr: expr_or ;
 

@@ -206,14 +206,6 @@ EXPLAIN <query>;
 EXPLAIN ANALYZE <query>;
 ```
 
-## Extending the project
-
-- **Add new operators**: Define a new `LogicalNodeType` in [src/planner/planner.h](src/planner/planner.h), handle it in the logical plan builder, optimizer, and executor.
-- **Add optimization rules**: Add new transformation functions in [src/optimizer/rule_optimizer.cpp](src/optimizer/rule_optimizer.cpp) and call them from `optimize_rules()`.
-- **Add new data types**: Extend the `Value` variant in [src/storage/storage.h](src/storage/storage.h) and update the comparison/arithmetic helpers in [src/storage/catalog.cpp](src/storage/catalog.cpp).
-- **Add persistent storage**: Replace the in-memory `Table::rows` with a disk-backed page structure.
-- **Add new SQL syntax**: Add tokens in [src/parser/sql_lexer.l](src/parser/sql_lexer.l), grammar rules in [src/parser/sql_parser.y](src/parser/sql_parser.y), and corresponding AST nodes in [src/ast/ast.h](src/ast/ast.h).
-
 ## SQP Test Suite Documentation
 
 Exhaustive test suite for the Simple Query Processor & Optimizer (SQP) using **Catch2 v3**.

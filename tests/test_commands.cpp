@@ -12,7 +12,7 @@
 #define SQP_EXE "./sqp"
 #endif
 
-// Helper to run a shell command and capture its output
+// We use this to run a shell command and capture its output
 static std::string run_cmd(const std::string& cmd) {
     std::string result = "";
     std::string full_cmd = cmd + " > .test_out.tmp 2>&1";
@@ -27,7 +27,7 @@ static std::string run_cmd(const std::string& cmd) {
     return result;
 }
 
-// Helper: write lines to a temp script, pipe into sqp, return output
+// We use this to write lines to a temp script, pipe into sqp, return output
 static std::string run_interactive(const std::string& commands) {
     std::ofstream script(".cmd_test.sql");
     script << commands;
@@ -43,7 +43,6 @@ static std::string read_text_file(const std::string& path) {
     return std::string(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
 }
 
-// ─────────────────────── .source / --file tests ───────────────────────
 
 TEST_CASE("E2E: Execute SQL via --file", "[e2e][commands]") {
     std::ofstream script("dynamic_test.sql");
@@ -95,7 +94,6 @@ TEST_CASE("E2E: Unterminated SQL in file", "[e2e][commands]") {
     std::remove("unterminated.sql");
 }
 
-// ─────────────────────── .help ───────────────────────
 
 TEST_CASE("E2E: .help command", "[e2e][commands]") {
     std::string output = run_interactive(
@@ -114,7 +112,6 @@ TEST_CASE("E2E: .help command", "[e2e][commands]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".quit"));
 }
 
-// ─────────────────────── .save ───────────────────────
 
 TEST_CASE("E2E: .save with no argument", "[e2e][commands]") {
     std::string output = run_interactive(
@@ -167,7 +164,6 @@ TEST_CASE("E2E: .save overwrites existing file", "[e2e][commands]") {
     std::remove(dump_file.c_str());
 }
 
-// ─────────────────────── .tables ───────────────────────
 
 TEST_CASE("E2E: .tables with no tables", "[e2e][commands]") {
     std::string output = run_interactive(
@@ -201,7 +197,6 @@ TEST_CASE("E2E: .tables after CREATE TABLE", "[e2e][commands]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("my_tbl"));
 }
 
-// ─────────────────────── .schema ───────────────────────
 
 TEST_CASE("E2E: .schema shows column types", "[e2e][commands]") {
     std::string output = run_interactive(
@@ -225,7 +220,6 @@ TEST_CASE("E2E: .schema on nonexistent table", "[e2e][commands]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table not found: no_such_table"));
 }
 
-// ─────────────────────── .generate ───────────────────────
 
 TEST_CASE("E2E: .generate creates tables with data", "[e2e][commands]") {
     std::string output = run_interactive(
@@ -242,7 +236,7 @@ TEST_CASE("E2E: .generate creates tables with data", "[e2e][commands]") {
 }
 
 TEST_CASE("E2E: .generate default (no argument)", "[e2e][commands]") {
-    // .generate with no arg defaults to 10000 — just verify it doesn't crash
+    // .generate with no arg defaults to 10000 -- just verify it doesn't crash
     // and tables appear. We use a small number to keep it fast.
     std::string output = run_interactive(
         ".generate 5\n"
@@ -253,7 +247,6 @@ TEST_CASE("E2E: .generate default (no argument)", "[e2e][commands]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("5"));
 }
 
-// ─────────────────────── .benchmark ───────────────────────
 
 TEST_CASE("E2E: .benchmark with no data", "[e2e][commands]") {
     std::string output = run_interactive(
@@ -275,7 +268,6 @@ TEST_CASE("E2E: .benchmark with data", "[e2e][commands]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("ms"));
 }
 
-// ─────────────────────── .quit / .exit ───────────────────────
 
 TEST_CASE("E2E: .quit exits cleanly", "[e2e][commands]") {
     std::string output = run_interactive(".quit\n");
@@ -289,7 +281,6 @@ TEST_CASE("E2E: .exit exits cleanly", "[e2e][commands]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Bye!"));
 }
 
-// ─────────────────────── Unknown command ───────────────────────
 
 TEST_CASE("E2E: Unknown dot command", "[e2e][commands]") {
     std::string output = run_interactive(
@@ -300,14 +291,12 @@ TEST_CASE("E2E: Unknown dot command", "[e2e][commands]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Unknown command: .foobar"));
 }
 
-// ─────────────────────── --file usage error ───────────────────────
 
 TEST_CASE("E2E: --file with no path", "[e2e][commands]") {
     std::string output = run_cmd(std::string(SQP_EXE) + " --file");
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Usage: sqp --file <script.sql>"));
 }
 
-// ─────────────────────── Bare arg as file ───────────────────────
 
 TEST_CASE("E2E: Bare argument treated as script file", "[e2e][commands]") {
     std::ofstream script("bare_arg_test.sql");
@@ -320,7 +309,6 @@ TEST_CASE("E2E: Bare argument treated as script file", "[e2e][commands]") {
     std::remove("bare_arg_test.sql");
 }
 
-// ─────────────────────── DML Tests (INSERT/UPDATE/DELETE) ───────────────────────
 
 TEST_CASE("E2E: INSERT single row", "[e2e][dml]") {
     std::string output = run_interactive(
@@ -505,7 +493,6 @@ TEST_CASE("E2E: DELETE WHERE no rows match", "[e2e][dml]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
 }
 
-// ─────────────────────── ALTER TABLE Tests ───────────────────────
 
 TEST_CASE("E2E: ALTER TABLE ADD COLUMN with NULL in old rows", "[e2e][alter]") {
     std::string output = run_interactive(
@@ -662,7 +649,6 @@ TEST_CASE("E2E: ALTER TABLE with index compatibility", "[e2e][alter]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
 }
 
-// ─────────────────────── RENAME TABLE (standalone) Tests ───────────────────────
 
 TEST_CASE("E2E: RENAME TABLE success", "[e2e][alter]") {
     std::string output = run_interactive(
@@ -712,7 +698,6 @@ TEST_CASE("E2E: RENAME TABLE nonexistent table error", "[e2e][alter]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("table not found"));
 }
 
-// ─────────────────────── DROP TABLE Tests ───────────────────────
 
 TEST_CASE("E2E: DROP TABLE success", "[e2e][ddl]") {
     std::string output = run_interactive(
@@ -750,7 +735,6 @@ TEST_CASE("E2E: DROP TABLE cascades index removal", "[e2e][ddl]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Error"));
 }
 
-// ─────────────────────── DROP VIEW Tests ───────────────────────
 
 TEST_CASE("E2E: DROP VIEW success", "[e2e][ddl]") {
     std::string output = run_interactive(
@@ -773,7 +757,6 @@ TEST_CASE("E2E: DROP VIEW nonexistent", "[e2e][ddl]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("View not found: no_such_view"));
 }
 
-// ─────────────────────── DROP INDEX Tests ───────────────────────
 
 TEST_CASE("E2E: DROP INDEX nonexistent", "[e2e][ddl]") {
     std::string output = run_interactive(
@@ -784,7 +767,6 @@ TEST_CASE("E2E: DROP INDEX nonexistent", "[e2e][ddl]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Index not found: fake_index"));
 }
 
-// ─────────────────────── TRUNCATE Tests ───────────────────────
 
 TEST_CASE("E2E: TRUNCATE TABLE clears rows and table persists", "[e2e][ddl]") {
     std::string output = run_interactive(
@@ -846,10 +828,9 @@ TEST_CASE("E2E: TRUNCATE case insensitivity", "[e2e][ddl]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("truncated (2 rows removed)"));
 }
 
-// ─────────── Script Error-Stop Behaviour ───────────
 
 TEST_CASE("E2E: --file stops on syntax error", "[e2e][error-stop]") {
-    // Script: CREATE → valid INSERT → INVALID syntax → another INSERT → SELECT
+    // Script: CREATE -> valid INSERT -> INVALID syntax -> another INSERT -> SELECT
     // Expected: first INSERT runs, second INSERT does NOT (script stops at error)
     std::ofstream script("err_stop_test.sql");
     script << "CREATE TABLE es (id INT);\n";
@@ -890,7 +871,7 @@ TEST_CASE("E2E: interactive REPL continues after error", "[e2e][error-stop]") {
 }
 
 TEST_CASE("E2E: --file stops on runtime error", "[e2e][error-stop]") {
-    // Script: INSERT into nonexistent table → should stop; subsequent CREATE should not run
+    // Script: INSERT into nonexistent table -> should stop; subsequent CREATE should not run
     std::ofstream script("err_runtime_test.sql");
     script << "INSERT INTO ghost VALUES (1);\n";
     script << "CREATE TABLE after_err (id INT);\n";
@@ -906,7 +887,6 @@ TEST_CASE("E2E: --file stops on runtime error", "[e2e][error-stop]") {
     std::remove("err_runtime_test.sql");
 }
 
-// ─────────── MERGE Statement ───────────
 
 TEST_CASE("E2E: MERGE basic upsert", "[e2e][merge]") {
     std::string output = run_interactive(
@@ -992,7 +972,6 @@ TEST_CASE("E2E: MERGE case insensitivity", "[e2e][merge]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) updated"));
 }
 
-// ─────────── Query Plan Visualization ───────────
 
 TEST_CASE("E2E: EXPLAIN tree connectors", "[e2e][explain]") {
     std::string output = run_interactive(
@@ -1055,7 +1034,6 @@ TEST_CASE("E2E: .plan command", "[e2e][commands]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("digraph QueryPlan"));
 }
 
-// ─────────── Triggers ───────────
 
 TEST_CASE("E2E: AFTER INSERT trigger fires", "[e2e][trigger]") {
     std::string output = run_interactive(
@@ -1100,7 +1078,7 @@ TEST_CASE("E2E: DROP TRIGGER removes trigger", "[e2e][trigger]") {
     );
 
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Trigger 'trg1' dropped"));
-    // After dropping, trigger should not fire — t2 should be empty
+    // After dropping, trigger should not fire -- t2 should be empty
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("0 rows"));
 }
 
@@ -1142,7 +1120,6 @@ TEST_CASE("E2E: .triggers command", "[e2e][trigger]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("INSERT"));
 }
 
-// ─────────── Constraints ───────────
 
 TEST_CASE("E2E: NOT NULL rejects null INSERT", "[e2e][constraint]") {
     std::string output = run_interactive(
@@ -1200,7 +1177,7 @@ TEST_CASE("E2E: UNIQUE allows multiple NULLs", "[e2e][constraint]") {
         "SELECT COUNT(*) FROM uq_n;\n"
         ".quit\n"
     );
-    // Both inserts should succeed — NULL is not a duplicate
+    // Both inserts should succeed -- NULL is not a duplicate
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("2"));
 }
 
@@ -1271,7 +1248,7 @@ TEST_CASE("E2E: PK auto-creates index", "[e2e][constraint]") {
         "EXPLAIN SELECT * FROM pk_idx WHERE id = 1;\n"
         ".quit\n"
     );
-    // PK should auto-create a btree index → optimizer should use IndexScan
+    // PK should auto-create a btree index -> optimizer should use IndexScan
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("IndexScan"));
 }
 
@@ -1285,8 +1262,6 @@ TEST_CASE("E2E: Multiple constraints on one column", "[e2e][constraint]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("CHECK constraint violated"));
 }
-
-// ─────────── Foreign Key Constraints ───────────
 
 TEST_CASE("E2E: FK rejects INSERT with invalid reference", "[e2e][constraint][fk]") {
     std::string output = run_interactive(
@@ -1358,8 +1333,6 @@ TEST_CASE("E2E: FK case insensitive", "[e2e][constraint][fk]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted into 'fkci'"));
 }
 
-// ─────────── Multi-Statement Trigger Bodies ───────────
-
 TEST_CASE("E2E: Multi-statement trigger with BEGIN END", "[e2e][trigger][multi]") {
     std::string output = run_interactive(
         "CREATE TABLE orders (id INT, total INT);\n"
@@ -1404,7 +1377,6 @@ TEST_CASE("E2E: Multi-statement BEFORE trigger", "[e2e][trigger][multi]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1"));
 }
 
-// ─────────── Subqueries ───────────
 
 // --- Correlated Scalar Subquery Test ---
 TEST_CASE("E2E: Execute Correlated Scalar Subquery", "[e2e][subquery]") {

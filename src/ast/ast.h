@@ -16,8 +16,6 @@ struct Statement;
 using ExprPtr = std::shared_ptr<Expr>;
 using StmtPtr = std::shared_ptr<Statement>;
 
-// ───── Expression types ─────
-
 enum class ExprType {
     COLUMN_REF,
     LITERAL_INT,
@@ -88,8 +86,6 @@ struct Expr {
     static ExprPtr make_func(const std::string& name, std::vector<ExprPtr> args, bool dist = false);
 };
 
-// ───── Table references ─────
-
 enum class TableRefType {
     BASE_TABLE,
     TRT_JOIN,
@@ -120,21 +116,15 @@ struct TableRef {
 
 using TableRefPtr = std::shared_ptr<TableRef>;
 
-// ───── Order-by item ─────
-
 struct OrderItem {
     ExprPtr expr;
     bool ascending = true;
 };
 
-// ───── CTE (WITH clause) ─────
-
 struct CTE {
     std::string name;
     std::shared_ptr<SelectStmt> query;
 };
-
-// ───── SELECT statement ─────
 
 enum class SetOpType {
     SO_NONE, SO_UNION, SO_UNION_ALL, SO_INTERSECT, SO_EXCEPT,
@@ -159,7 +149,7 @@ struct SelectStmt {
     std::string to_string() const;
 };
 
-// ───── DDL statements ─────
+// DDL statements
 
 struct ColumnDef {
     std::string name;
@@ -238,8 +228,6 @@ struct CreateTriggerStmt {
     int event;   // 0 = INSERT, 1 = UPDATE, 2 = DELETE
     std::vector<std::string> action_sqls;  // SQL statements to execute when trigger fires
 };
-
-// ───── Top-level statement ─────
 
 enum class StmtType {
     ST_SELECT,

@@ -12,9 +12,7 @@ using namespace storage;
 using namespace planner;
 using namespace ast;
 
-// ───── Expression evaluator ─────
-
-// Evaluation context: maps column name → index in current row
+// Evaluation context: maps column name -> index in current row
 struct EvalCtx {
     storage::Catalog* catalog = nullptr;
     std::vector<std::string> col_names;
@@ -255,10 +253,7 @@ static bool eval_bool(const ExprPtr& expr, const EvalCtx& ctx) {
     return value_to_int(v) != 0;
 }
 
-// ───── Forward declaration ─────
 static ExecResult exec_node(const LogicalNodePtr& node, Catalog& catalog, ExecStats& stats);
-
-// ───── Operator implementations ─────
 
 static ExecResult exec_scan(const LogicalNodePtr& node, Catalog& catalog, ExecStats& stats) {
     Table* tbl = catalog.get_table(node->table_name);
@@ -305,7 +300,7 @@ static ExecResult exec_index_scan(const LogicalNodePtr& node, Catalog& catalog, 
         // Equality lookup
         Value key = literal_to_value(node->index_key);
 
-        // Try hash index first
+        // We try hash index first
         HashIndex* hidx = catalog.get_index(node->table_name, node->index_column);
         if (hidx) {
             if (std::holds_alternative<int64_t>(key)) {
@@ -316,7 +311,7 @@ static ExecResult exec_index_scan(const LogicalNodePtr& node, Catalog& catalog, 
                 row_indices = hidx->lookup_int((int64_t)std::get<double>(key));
             }
         } else {
-            // Try btree
+            // We try btree
             BTreeIndex* bidx = catalog.get_btree_index(node->table_name, node->index_column);
             if (bidx) {
                 row_indices = bidx->lookup_exact(key);
@@ -334,7 +329,7 @@ static ExecResult exec_index_scan(const LogicalNodePtr& node, Catalog& catalog, 
         // Range comparison (<, >, <=, >=)
         BTreeIndex* bidx = catalog.get_btree_index(node->table_name, node->index_column);
         if (bidx && node->predicate->type == ExprType::BINARY_OP) {
-            // Determine if column is on left or right
+            // We determine if column is on left or right
             bool col_on_left = (node->predicate->left &&
                                 node->predicate->left->type == ExprType::COLUMN_REF);
             Value lit = col_on_left ? literal_to_value(node->predicate->right)
@@ -357,7 +352,7 @@ static ExecResult exec_index_scan(const LogicalNodePtr& node, Catalog& catalog, 
         }
     }
 
-    // Collect matching rows
+    // We collect matching rows
     for (size_t idx : row_indices) {
         if (idx < tbl->rows.size()) {
             res.rows.push_back(tbl->rows[idx]);
@@ -397,10 +392,10 @@ static ExecResult exec_projection(const LogicalNodePtr& node, Catalog& catalog, 
     ctx.stats = &stats;
 
     ExecResult res;
-    // Build output column names
+    // We build output column names
     for (size_t i = 0; i < node->projections.size(); i++) {
         if (node->projections[i]->type == ExprType::STAR) {
-            // Expand *
+            // We expand *
             for (auto& c : child.columns) res.columns.push_back(c);
         } else {
             res.columns.push_back(node->output_names[i]);
@@ -459,7 +454,7 @@ static ExecResult exec_hash_join(const LogicalNodePtr& node, Catalog& catalog, E
     res.columns = left.columns;
     res.columns.insert(res.columns.end(), right.columns.begin(), right.columns.end());
 
-    // Extract join key columns from condition (if it's an equality condition)
+    // We extract join key columns from condition (if it's an equality condition)
     // For simplicity, we try to identify col = col patterns
     int left_key = -1, right_key = -1;
     if (node->join_cond && node->join_cond->type == ExprType::BINARY_OP &&
@@ -477,7 +472,7 @@ static ExecResult exec_hash_join(const LogicalNodePtr& node, Catalog& catalog, E
                 rctx.find_col(rhs->column_name) :
                 rctx.find_col_qualified(rhs->table_name, rhs->column_name);
 
-            // Try swapping if not found
+            // We try swapping if not found
             if (left_key < 0 || right_key < 0) {
                 left_key = rhs->table_name.empty() ?
                     lctx.find_col(rhs->column_name) :
@@ -490,7 +485,7 @@ static ExecResult exec_hash_join(const LogicalNodePtr& node, Catalog& catalog, E
     }
 
     if (left_key >= 0 && right_key >= 0) {
-        // Build hash table on left (smaller) side
+        // We build hash table on left (smaller) side
         std::unordered_map<std::string, std::vector<size_t>> hash_table;
         for (size_t i = 0; i < left.rows.size(); i++) {
             std::string key = value_display(left.rows[i][left_key]);
@@ -534,7 +529,7 @@ static ExecResult exec_aggregation(const LogicalNodePtr& node, Catalog& catalog,
     ExecResult res;
     res.columns = node->agg_output_names;
 
-    // Group rows
+    // We group rows
     struct GroupState {
         Row group_key;
         std::vector<Row*> rows;
@@ -552,7 +547,7 @@ static ExecResult exec_aggregation(const LogicalNodePtr& node, Catalog& catalog,
     };
 
     if (node->group_exprs.empty()) {
-        // Single group even if empty – needed for COUNT(*) on empty tables
+        // Single group even if empty - needed for COUNT(*) on empty tables
         groups[""].rows.reserve(child.rows.size());
         for (auto& row : child.rows) {
             groups[""].rows.push_back(&row);
@@ -626,7 +621,7 @@ static ExecResult exec_aggregation(const LogicalNodePtr& node, Catalog& catalog,
                     out_row.push_back(maxv);
                 }
             } else {
-                // Non-aggregate in GROUP BY output — evaluate on first row of group
+                // Non-aggregate in GROUP BY output -- evaluate on first row of group
                 if (!gs.rows.empty()) {
                     ctx.row = gs.rows[0];
                     out_row.push_back(eval_expr(agg_expr, ctx));
@@ -697,7 +692,6 @@ static ExecResult exec_distinct(const LogicalNodePtr& node, Catalog& catalog, Ex
     return res;
 }
 
-// ───── Dispatch ─────
 static ExecResult exec_node(const LogicalNodePtr& node, Catalog& catalog, ExecStats& stats) {
     if (!node) return {};
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -720,7 +714,6 @@ static ExecResult exec_node(const LogicalNodePtr& node, Catalog& catalog, ExecSt
     return res;
 }
 
-// ───── Public entry ─────
 ExecResult execute(PhysicalNodePtr plan, Catalog& catalog, const EvalCtx* outer_ctx) {
     ExecStats stats;
     stats.outer_ctx = outer_ctx;

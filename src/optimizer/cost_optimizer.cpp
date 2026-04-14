@@ -8,7 +8,6 @@ namespace optimizer {
 using namespace planner;
 using namespace ast;
 
-// ───── Estimate selectivity of a predicate ─────
 static double estimate_selectivity(const ExprPtr& pred, storage::Catalog& catalog,
                                    const std::string& table) {
     if (!pred) return 1.0;
@@ -47,7 +46,7 @@ static double estimate_selectivity(const ExprPtr& pred, storage::Catalog& catalo
     return 0.5; // default
 }
 
-// ───── Annotate plan with row estimates ─────
+// Annotating plan with row estimates
 static void estimate_rows(LogicalNodePtr node, storage::Catalog& catalog) {
     if (!node) return;
     estimate_rows(node->left, catalog);
@@ -133,7 +132,6 @@ static void estimate_rows(LogicalNodePtr node, storage::Catalog& catalog) {
     }
 }
 
-// ───── Choose join algorithm ─────
 static void choose_join_algo(LogicalNodePtr node, storage::Catalog& catalog) {
     if (!node) return;
     choose_join_algo(node->left, catalog);
@@ -152,7 +150,6 @@ static void choose_join_algo(LogicalNodePtr node, storage::Catalog& catalog) {
     }
 }
 
-// ───── Rewrite FILTER+TABLE_SCAN → INDEX_SCAN when index exists ─────
 static bool is_literal(const ExprPtr& e) {
     return e && (e->type == ExprType::LITERAL_INT ||
                  e->type == ExprType::LITERAL_FLOAT ||
@@ -175,7 +172,7 @@ static LogicalNodePtr rewrite_index_scan(LogicalNodePtr node, storage::Catalog& 
 
     std::string tbl = scan->table_name;
 
-    // Case 1: col = literal (equality) — works with hash or btree
+    // Case 1: col = literal (equality) -- works with hash or btree
     if (pred->type == ExprType::BINARY_OP && pred->bin_op == BinOp::OP_EQ) {
         ExprPtr col_expr = nullptr, lit_expr = nullptr;
         if (pred->left && pred->left->type == ExprType::COLUMN_REF && is_literal(pred->right)) {
@@ -195,7 +192,7 @@ static LogicalNodePtr rewrite_index_scan(LogicalNodePtr node, storage::Catalog& 
         }
     }
 
-    // Case 2: col < / > / <= / >= literal — btree only
+    // Case 2: col < / > / <= / >= literal -- btree only
     if (pred->type == ExprType::BINARY_OP &&
         (pred->bin_op == BinOp::OP_LT || pred->bin_op == BinOp::OP_GT ||
          pred->bin_op == BinOp::OP_LTE || pred->bin_op == BinOp::OP_GTE)) {
@@ -212,13 +209,13 @@ static LogicalNodePtr rewrite_index_scan(LogicalNodePtr node, storage::Catalog& 
             idx_node->table_alias = scan->table_alias;
             idx_node->index_column = col_expr->column_name;
             idx_node->index_range = true;
-            // Store the predicate so executor knows which range op to use
+            // We store the predicate so executor knows which range op to use
             idx_node->predicate = pred;
             return idx_node;
         }
     }
 
-    // Case 3: BETWEEN — btree only
+    // Case 3: BETWEEN -- btree only
     if (pred->type == ExprType::BETWEEN_EXPR && pred->operand &&
         pred->operand->type == ExprType::COLUMN_REF &&
         is_literal(pred->between_low) && is_literal(pred->between_high)) {
@@ -239,7 +236,6 @@ static LogicalNodePtr rewrite_index_scan(LogicalNodePtr node, storage::Catalog& 
     return node;
 }
 
-// ───── Cost-based optimizer entry ─────
 LogicalNodePtr optimize_cost(LogicalNodePtr plan, storage::Catalog& catalog) {
     plan = rewrite_index_scan(plan, catalog);
     estimate_rows(plan, catalog);
@@ -249,7 +245,6 @@ LogicalNodePtr optimize_cost(LogicalNodePtr plan, storage::Catalog& catalog) {
     return plan;
 }
 
-// ───── Combined pipeline ─────
 LogicalNodePtr optimize(LogicalNodePtr plan, storage::Catalog& catalog) {
     plan = optimize_rules(plan);
     plan = optimize_cost(plan, catalog);

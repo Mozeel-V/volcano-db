@@ -42,5 +42,6 @@
 
 # Build output
 build/
-fixes.txt
-changes.md
+plan.txt
+plan.md
+report.tex

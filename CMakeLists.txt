@@ -53,7 +53,7 @@ set(LIB_SOURCES
 add_executable(sqp src/main.cpp ${LIB_SOURCES})
 target_compile_options(sqp PRIVATE -O2 -Wall)
 
-# ───── Tests (Catch2) ─────
+# ----- Tests (Catch2) -----
 # Try system-installed Catch2 first; fall back to downloading if not found
 find_package(Catch2 3 QUIET)
 if(NOT Catch2_FOUND)

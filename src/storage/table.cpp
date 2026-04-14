@@ -22,7 +22,7 @@ void Table::load_csv(const std::string& path) {
         throw std::runtime_error("Cannot open file: " + path);
     }
     std::string line;
-    // Skip header line
+    // We skip header line
     if (!std::getline(file, line)) return;
 
     while (std::getline(file, line)) {
@@ -69,7 +69,7 @@ size_t Table::distinct_values(const std::string& col) const {
 }
 
 void Table::print_rows(const std::vector<std::string>& columns, const std::vector<Row>& result_rows, int max_rows) const {
-    // Print header
+    // We print header
     for (size_t i = 0; i < columns.size(); i++) {
         if (i) std::cout << " | ";
         std::cout << columns[i];

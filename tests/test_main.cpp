@@ -18,9 +18,7 @@
 #include <functional>
 #include <cmath>
 
-// ═══════════════════════════════════════════════════════════════════════════════
-//  parse_sql bridge — same as in main.cpp
-// ═══════════════════════════════════════════════════════════════════════════════
+//  parse_sql bridge -- same as in main.cpp
 extern int yyparse();
 extern ast::StmtPtr get_parsed_stmt();
 typedef struct yy_buffer_state* YY_BUFFER_STATE;
@@ -37,9 +35,7 @@ StmtPtr parse_sql(const std::string& sql) {
 }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-//  Helper: parse SQL, build plan, optimize, execute — all in one
-// ═══════════════════════════════════════════════════════════════════════════════
+//  We use this to parse SQL, build plan, optimize, execute -- all in one
 
 static executor::ExecResult run_query(storage::Catalog& catalog, const std::string& sql) {
     auto stmt = ast::parse_sql(sql);
@@ -55,7 +51,7 @@ static executor::ExecResult run_query(storage::Catalog& catalog, const std::stri
     return {};
 }
 
-// Helper: create a small test table directly
+// We use this to create a small test table directly
 static void create_test_table(storage::Catalog& catalog) {
     auto tbl = std::make_shared<storage::Table>();
     tbl->name = "t";
@@ -107,7 +103,7 @@ static void create_join_tables(storage::Catalog& catalog) {
     catalog.add_table(dept);
 }
 
-// Helper to get int value from a result cell
+// We use this to get int value from a result cell
 static int64_t as_int(const storage::Value& v) {
     REQUIRE(std::holds_alternative<int64_t>(v));
     return std::get<int64_t>(v);
@@ -127,9 +123,7 @@ static bool is_null(const storage::Value& v) {
     return std::holds_alternative<std::monostate>(v);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 1: PARSER — DDL STATEMENTS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Parser -- Ddl Statements.
 
 TEST_CASE("Parser: CREATE TABLE basic", "[parser][ddl]") {
     auto stmt = ast::parse_sql("CREATE TABLE users (id INT, name VARCHAR, age INT);");
@@ -156,7 +150,7 @@ TEST_CASE("Parser: CREATE TABLE with VARCHAR size", "[parser][ddl]") {
     auto stmt = ast::parse_sql("CREATE TABLE items (name VARCHAR(255), code VARCHAR(10));");
     REQUIRE(stmt != nullptr);
     REQUIRE(stmt->type == ast::StmtType::ST_CREATE_TABLE);
-    // VARCHAR size is parsed but ignored — type stored as "VARCHAR"
+    // VARCHAR size is parsed but ignored -- type stored as "VARCHAR"
     CHECK(stmt->create_table->columns[0].data_type == "VARCHAR");
     CHECK(stmt->create_table->columns[1].data_type == "VARCHAR");
 }
@@ -226,9 +220,7 @@ TEST_CASE("Parser: LOAD statement", "[parser][ddl]") {
     CHECK(stmt->load->file_path == "data.csv");
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 2: PARSER — SELECT STATEMENT BASICS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Parser -- Select Statement Basics.
 
 TEST_CASE("Parser: simple SELECT *", "[parser][select]") {
     auto stmt = ast::parse_sql("SELECT * FROM t;");
@@ -274,9 +266,7 @@ TEST_CASE("Parser: SELECT with table alias", "[parser][select]") {
     CHECK(stmt->select->from_clause[0]->alias == "e");
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 3: PARSER — EXPRESSIONS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Parser -- Expressions.
 
 TEST_CASE("Parser: integer literal", "[parser][expr]") {
     auto stmt = ast::parse_sql("SELECT 42 FROM t;");
@@ -432,9 +422,7 @@ TEST_CASE("Parser: qualified column reference", "[parser][expr]") {
     CHECK(stmt->select->select_list[0]->column_name == "id");
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 4: PARSER — AGGREGATE FUNCTIONS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Parser -- Aggregate Functions.
 
 TEST_CASE("Parser: COUNT(*)", "[parser][aggregate]") {
     auto stmt = ast::parse_sql("SELECT COUNT(*) FROM t;");
@@ -471,9 +459,7 @@ TEST_CASE("Parser: SUM, AVG, MIN, MAX", "[parser][aggregate]") {
     CHECK(stmt->select->select_list[3]->func_name == "MAX");
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 5: PARSER — CLAUSES (WHERE, GROUP BY, HAVING, ORDER BY, LIMIT)
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Parser -- Clauses (Where, Group By, Having, Order By, Limit).
 
 TEST_CASE("Parser: WHERE clause", "[parser][clause]") {
     auto stmt = ast::parse_sql("SELECT * FROM t WHERE id > 2;");
@@ -528,9 +514,7 @@ TEST_CASE("Parser: LIMIT with OFFSET", "[parser][clause]") {
     CHECK(stmt->select->offset == 5);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 6: PARSER — JOIN SYNTAX
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Parser -- Join Syntax.
 
 TEST_CASE("Parser: INNER JOIN", "[parser][join]") {
     auto stmt = ast::parse_sql("SELECT * FROM emp JOIN dept ON emp.dept = dept.dname;");
@@ -584,9 +568,7 @@ TEST_CASE("Parser: subquery in FROM", "[parser][join]") {
     CHECK(from->alias == "sub");
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 7: PARSER — EXPLAIN / BENCHMARK
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Parser -- Explain / Benchmark.
 
 TEST_CASE("Parser: EXPLAIN SELECT", "[parser][explain]") {
     auto stmt = ast::parse_sql("EXPLAIN SELECT * FROM t;");
@@ -609,9 +591,7 @@ TEST_CASE("Parser: BENCHMARK SELECT", "[parser][explain]") {
     CHECK(stmt->type == ast::StmtType::ST_BENCHMARK);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 8: CASE INSENSITIVITY — SQL KEYWORDS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Case Insensitivity -- Sql Keywords.
 
 TEST_CASE("Case insensitivity: all lowercase", "[parser][case]") {
     auto stmt = ast::parse_sql("select * from t where id = 1;");
@@ -719,12 +699,10 @@ TEST_CASE("Case insensitivity: BETWEEN, LIKE, IN", "[parser][case]") {
     CHECK(s3->select->where_clause->type == ast::ExprType::IN_EXPR);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 9: PUNCTUATION & GRAMMAR
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Punctuation & Grammar.
 
 TEST_CASE("Grammar: semicolon terminator required", "[parser][grammar]") {
-    // Without semicolon — should still work (parser may handle)
+    // Without semicolon -- should still work (parser may handle)
     // or fail depending on grammar. We test the behavior.
     auto stmt = ast::parse_sql("SELECT * FROM t;");
     REQUIRE(stmt != nullptr);
@@ -809,9 +787,7 @@ TEST_CASE("Grammar: SQL comment block /* */", "[parser][grammar]") {
     CHECK(stmt->select->select_list[0]->type == ast::ExprType::STAR);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 10: STORAGE — VALUE HELPERS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Storage -- Value Helpers.
 
 TEST_CASE("Storage: value_is_null", "[storage][value]") {
     CHECK(storage::value_is_null(std::monostate{}) == true);
@@ -823,7 +799,7 @@ TEST_CASE("Storage: value_is_null", "[storage][value]") {
 TEST_CASE("Storage: value_to_int conversions", "[storage][value]") {
     CHECK(storage::value_to_int(storage::Value{(int64_t)42}) == 42);
     CHECK(storage::value_to_int(storage::Value{3.7}) == 3); // truncation
-    CHECK(storage::value_to_int(std::monostate{}) == 0);    // null → 0
+    CHECK(storage::value_to_int(std::monostate{}) == 0);    // null -> 0
 }
 
 TEST_CASE("Storage: value_to_double conversions", "[storage][value]") {
@@ -843,9 +819,9 @@ TEST_CASE("Storage: value_equal", "[storage][value]") {
     CHECK(storage::value_equal(storage::Value{(int64_t)1}, storage::Value{(int64_t)2}) == false);
     CHECK(storage::value_equal(storage::Value{std::string("a")}, storage::Value{std::string("a")}) == true);
     CHECK(storage::value_equal(storage::Value{std::string("a")}, storage::Value{std::string("b")}) == false);
-    // NULL = NULL → false (SQL standard)
+    // NULL = NULL -> false (SQL standard)
     CHECK(storage::value_equal(std::monostate{}, std::monostate{}) == false);
-    // NULL = x → false
+    // NULL = x -> false
     CHECK(storage::value_equal(std::monostate{}, storage::Value{(int64_t)1}) == false);
 }
 
@@ -853,7 +829,7 @@ TEST_CASE("Storage: value_less", "[storage][value]") {
     CHECK(storage::value_less(storage::Value{(int64_t)1}, storage::Value{(int64_t)2}) == true);
     CHECK(storage::value_less(storage::Value{(int64_t)2}, storage::Value{(int64_t)1}) == false);
     CHECK(storage::value_less(storage::Value{std::string("a")}, storage::Value{std::string("b")}) == true);
-    // NULL comparisons → false
+    // NULL comparisons -> false
     CHECK(storage::value_less(std::monostate{}, storage::Value{(int64_t)1}) == false);
     CHECK(storage::value_less(storage::Value{(int64_t)1}, std::monostate{}) == false);
 }
@@ -865,11 +841,11 @@ TEST_CASE("Storage: value_less mixed int/float", "[storage][value]") {
 }
 
 TEST_CASE("Storage: value_add/sub/mul/div", "[storage][value]") {
-    // INT + INT → INT
+    // INT + INT -> INT
     auto sum = storage::value_add(storage::Value{(int64_t)3}, storage::Value{(int64_t)4});
     CHECK(std::get<int64_t>(sum) == 7);
 
-    // INT + FLOAT → FLOAT (via double)
+    // INT + FLOAT -> FLOAT (via double)
     auto fsum = storage::value_add(storage::Value{(int64_t)3}, storage::Value{1.5});
     CHECK(std::get<double>(fsum) == Catch::Approx(4.5));
 
@@ -912,9 +888,7 @@ TEST_CASE("Storage: value_display formatting", "[storage][value]") {
     CHECK(storage::value_display(storage::Value{std::string("hello")}) == "hello");
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 11: STORAGE — TABLE OPERATIONS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Storage -- Table Operations.
 
 TEST_CASE("Storage: Table creation and schema", "[storage][table]") {
     storage::Table tbl("test", {{"id", storage::DataType::INT}, {"name", storage::DataType::VARCHAR}});
@@ -952,9 +926,7 @@ TEST_CASE("Storage: Table cardinality", "[storage][table]") {
     CHECK(tbl.cardinality() == 2);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 12: STORAGE — CATALOG
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Storage -- Catalog.
 
 TEST_CASE("Storage: Catalog add and get table", "[storage][catalog]") {
     storage::Catalog catalog;
@@ -993,9 +965,7 @@ TEST_CASE("Storage: Catalog add and get view", "[storage][catalog]") {
     REQUIRE(v->query != nullptr);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 13: STORAGE — HASH INDEX
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Storage -- Hash Index.
 
 TEST_CASE("Storage: Hash index build and lookup (int)", "[storage][index]") {
     storage::Table tbl("t", {{"id", storage::DataType::INT}});
@@ -1039,9 +1009,7 @@ TEST_CASE("Storage: Catalog create_index", "[storage][index]") {
     CHECK(catalog.get_index("t", "nonexistent") == nullptr);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 14: END-TO-END EXECUTION — SELECT *
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End Execution -- Select *.
 
 TEST_CASE("E2E: SELECT * FROM table", "[e2e][select]") {
     storage::Catalog catalog;
@@ -1068,9 +1036,7 @@ TEST_CASE("E2E: SELECT with expression in list", "[e2e][select]") {
     CHECK(as_int(res.rows[0][1]) == 11);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 15: END-TO-END — WHERE CLAUSE
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Where Clause.
 
 TEST_CASE("E2E: WHERE with equality", "[e2e][where]") {
     storage::Catalog catalog;
@@ -1180,9 +1146,7 @@ TEST_CASE("E2E: WHERE with LIKE exact match", "[e2e][where]") {
     CHECK(res.rows.size() == 1);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 16: END-TO-END — ORDER BY
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Order By.
 
 TEST_CASE("E2E: ORDER BY ASC (default)", "[e2e][orderby]") {
     storage::Catalog catalog;
@@ -1222,9 +1186,7 @@ TEST_CASE("E2E: ORDER BY multiple keys", "[e2e][orderby]") {
     CHECK(as_string(res.rows[2][3]) == "HR");
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 17: END-TO-END — LIMIT / OFFSET
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Limit / Offset.
 
 TEST_CASE("E2E: LIMIT", "[e2e][limit]") {
     storage::Catalog catalog;
@@ -1265,9 +1227,7 @@ TEST_CASE("E2E: LIMIT 0", "[e2e][limit]") {
     CHECK(res.rows.size() == 0);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 18: END-TO-END — DISTINCT
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Distinct.
 
 TEST_CASE("E2E: SELECT DISTINCT", "[e2e][distinct]") {
     storage::Catalog catalog;
@@ -1283,9 +1243,7 @@ TEST_CASE("E2E: DISTINCT on all-unique column", "[e2e][distinct]") {
     CHECK(res.rows.size() == 5);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 19: END-TO-END — AGGREGATION
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Aggregation.
 
 TEST_CASE("E2E: COUNT(*)", "[e2e][aggregation]") {
     storage::Catalog catalog;
@@ -1372,13 +1330,11 @@ TEST_CASE("E2E: HAVING clause", "[e2e][aggregation]") {
     storage::Catalog catalog;
     create_test_table(catalog);
     auto res = run_query(catalog, "SELECT dept, COUNT(*) FROM t GROUP BY dept HAVING COUNT(*) > 1;");
-    // Engineering=2, Sales=2 → 2 groups pass HAVING
+    // Engineering=2, Sales=2 -> 2 groups pass HAVING
     CHECK(res.rows.size() == 2);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 20: END-TO-END — JOINS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Joins.
 
 TEST_CASE("E2E: INNER JOIN", "[e2e][join]") {
     storage::Catalog catalog;
@@ -1399,7 +1355,7 @@ TEST_CASE("E2E: INNER JOIN with WHERE filter", "[e2e][join]") {
     storage::Catalog catalog;
     create_join_tables(catalog);
     auto res = run_query(catalog, "SELECT e.name, d.budget FROM emp e JOIN dept d ON e.dept = d.dname WHERE d.budget > 250000;");
-    // Eng=500000, Sales=300000 → 3 employees match (Alice, Bob, Carol)
+    // Eng=500000, Sales=300000 -> 3 employees match (Alice, Bob, Carol)
     CHECK(res.rows.size() == 3);
 }
 
@@ -1424,9 +1380,7 @@ TEST_CASE("E2E: JOIN with aggregation", "[e2e][join]") {
     CHECK(res.rows.size() == 3);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 21: END-TO-END — ARITHMETIC IN SELECT
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Arithmetic In Select.
 
 TEST_CASE("E2E: arithmetic in SELECT list", "[e2e][arithmetic]") {
     storage::Catalog catalog;
@@ -1455,9 +1409,7 @@ TEST_CASE("E2E: modulo operator", "[e2e][arithmetic]") {
     CHECK(as_int(res.rows[1][1]) == 0); // 2 % 2 = 0
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 22: END-TO-END — NULL HANDLING
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Null Handling.
 
 TEST_CASE("E2E: NULL handling in data", "[e2e][null]") {
     storage::Catalog catalog;
@@ -1514,15 +1466,13 @@ TEST_CASE("E2E: NULL equality comparison", "[e2e][null]") {
     };
     catalog.add_table(tbl);
 
-    // NULL = NULL → false (SQL standard), so no rows match
+    // NULL = NULL -> false (SQL standard), so no rows match
     auto res = run_query(catalog, "SELECT * FROM tn2 WHERE val = val;");
-    // Only row 1 matches (10=10), row 2 has NULL=NULL → false
+    // Only row 1 matches (10=10), row 2 has NULL=NULL -> false
     CHECK(res.rows.size() == 1);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 23: END-TO-END — COMBINED QUERY PATTERNS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Combined Query Patterns.
 
 TEST_CASE("E2E: SELECT with WHERE + ORDER BY + LIMIT", "[e2e][combined]") {
     storage::Catalog catalog;
@@ -1621,9 +1571,7 @@ TEST_CASE("E2E: MATERIALIZED VIEW keeps snapshot", "[e2e][view]") {
     CHECK(as_int(r2.rows[0][0]) == 1);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 24: PLANNER — LOGICAL PLAN STRUCTURE
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Planner -- Logical Plan Structure.
 
 TEST_CASE("Planner: simple SELECT generates scan + projection", "[planner]") {
     storage::Catalog catalog;
@@ -1738,9 +1686,7 @@ TEST_CASE("Planner: GROUP BY generates aggregation node", "[planner]") {
     CHECK(has_agg(plan));
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 25: OPTIMIZER — RULE-BASED
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Optimizer -- Rule-Based.
 
 TEST_CASE("Optimizer: selection pushdown below join", "[optimizer][rules]") {
     storage::Catalog catalog;
@@ -1752,7 +1698,7 @@ TEST_CASE("Optimizer: selection pushdown below join", "[optimizer][rules]") {
     auto opt  = optimizer::optimize_rules(plan);
 
     // After optimization, the filter on dept.budget should be pushed below the join
-    // Check by finding filter nodes in the tree
+    // We check by finding filter nodes in the tree
     std::function<int(const planner::LogicalNodePtr&)> count_filters;
     count_filters = [&](const planner::LogicalNodePtr& n) -> int {
         if (!n) return 0;
@@ -1783,9 +1729,7 @@ TEST_CASE("Optimizer: optimize does not change result", "[optimizer]") {
     CHECK(res_opt.columns.size() == res_unopt.columns.size());
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 26: OPTIMIZER — COST-BASED
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Optimizer -- Cost-Based.
 
 TEST_CASE("Optimizer: cost estimates are populated", "[optimizer][cost]") {
     storage::Catalog catalog;
@@ -1826,9 +1770,7 @@ TEST_CASE("Optimizer: hash join selected for large tables", "[optimizer][cost]")
     CHECK(jn->join_algo == planner::JoinAlgo::HASH_JOIN);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 27: EXECUTOR — EXECUTION STATS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Executor -- Execution Stats.
 
 TEST_CASE("Executor: stats populated", "[executor][stats]") {
     storage::Catalog catalog;
@@ -1855,9 +1797,7 @@ TEST_CASE("Executor: join comparison stats", "[executor][stats]") {
     CHECK(res.stats.join_comparisons > 0);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 28: END-TO-END — DDL + DML PIPELINE
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Ddl + Dml Pipeline.
 
 TEST_CASE("E2E: CREATE TABLE then query", "[e2e][ddl]") {
     storage::Catalog catalog;
@@ -1904,9 +1844,7 @@ TEST_CASE("E2E: CREATE INDEX then verify it exists", "[e2e][ddl]") {
     CHECK(hits.size() == 1);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 29: END-TO-END — GENERATED DATA (.generate equivalent)
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Generated Data (.Generate Equivalent).
 
 TEST_CASE("E2E: generated data queries", "[e2e][benchmark]") {
     storage::Catalog catalog;
@@ -1943,9 +1881,7 @@ TEST_CASE("E2E: generated data queries", "[e2e][benchmark]") {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 30: EDGE CASES & ROBUSTNESS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Edge Cases & Robustness.
 
 TEST_CASE("Edge: empty table query", "[e2e][edge]") {
     storage::Catalog catalog;
@@ -2097,9 +2033,7 @@ TEST_CASE("Edge: mixed case string comparison with LIKE", "[e2e][edge]") {
     CHECK(res.rows.size() == 0);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 31: AST FACTORY METHODS & TO_STRING
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Ast Factory Methods & To_String.
 
 TEST_CASE("AST: factory make_int", "[ast]") {
     auto e = ast::Expr::make_int(42);
@@ -2170,9 +2104,7 @@ TEST_CASE("AST: Expr to_string doesn't crash", "[ast]") {
     CHECK(!s.empty());
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 32: PLANNER — PLAN TO_STRING
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Planner -- Plan To_String.
 
 TEST_CASE("Planner: plan to_string doesn't crash", "[planner]") {
     storage::Catalog catalog;
@@ -2193,9 +2125,7 @@ TEST_CASE("Planner: optimized plan to_string", "[planner][optimizer]") {
     CHECK(!s.empty());
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 33: END-TO-END — STRING LITERALS & SPECIAL CHARACTERS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- String Literals & Special Characters.
 
 TEST_CASE("E2E: string literals with spaces", "[e2e][strings]") {
     storage::Catalog catalog;
@@ -2234,9 +2164,7 @@ TEST_CASE("E2E: LIKE on empty pattern", "[e2e][strings]") {
     CHECK(res.rows.size() == 1);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 34: END-TO-END — SUBQUERIES
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Subqueries.
 
 TEST_CASE("E2E: IN subquery", "[e2e][subquery]") {
     storage::Catalog catalog;
@@ -2265,9 +2193,7 @@ TEST_CASE("E2E: subquery in FROM clause", "[e2e][subquery]") {
     CHECK(stmt->select->from_clause[0]->type == ast::TableRefType::TRT_SUBQUERY);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 35: END-TO-END — EXPLAIN STATEMENT
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Explain Statement.
 
 TEST_CASE("E2E: EXPLAIN parses correctly", "[e2e][explain]") {
     storage::Catalog catalog;
@@ -2300,9 +2226,7 @@ TEST_CASE("E2E: EXPLAIN ANALYZE parses correctly", "[e2e][explain]") {
     CHECK(res.rows.size() == 5);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 36: END-TO-END — COMPLEX JOIN PATTERNS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Complex Join Patterns.
 
 TEST_CASE("E2E: JOIN with ORDER BY on joined column", "[e2e][join]") {
     storage::Catalog catalog;
@@ -2324,13 +2248,11 @@ TEST_CASE("E2E: JOIN with GROUP BY and HAVING", "[e2e][join]") {
     storage::Catalog catalog;
     create_join_tables(catalog);
     auto res = run_query(catalog, "SELECT d.dname, COUNT(*) FROM emp e JOIN dept d ON e.dept = d.dname GROUP BY d.dname HAVING COUNT(*) > 1;");
-    // Eng has 2 employees → passes HAVING
+    // Eng has 2 employees -> passes HAVING
     CHECK(res.rows.size() >= 1);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 37: END-TO-END — FLOAT/INT MIXED COMPARISONS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Float/Int Mixed Comparisons.
 
 TEST_CASE("E2E: float comparison in WHERE", "[e2e][types]") {
     storage::Catalog catalog;
@@ -2344,13 +2266,11 @@ TEST_CASE("E2E: int/float mixed arithmetic", "[e2e][types]") {
     create_test_table(catalog);
     auto res = run_query(catalog, "SELECT id, value + 1 FROM t WHERE id = 1;");
     REQUIRE(res.rows.size() == 1);
-    // 3.14 + 1 = 4.14 (float + int → float)
+    // 3.14 + 1 = 4.14 (float + int -> float)
     CHECK(as_double(res.rows[0][1]) == Catch::Approx(4.14));
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 38: END-TO-END — MULTIPLE AGGREGATE FUNCTIONS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test End-To-End -- Multiple Aggregate Functions.
 
 TEST_CASE("E2E: all aggregates in one query", "[e2e][aggregation]") {
     storage::Catalog catalog;
@@ -2376,9 +2296,7 @@ TEST_CASE("E2E: GROUP BY with AVG", "[e2e][aggregation]") {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 39: BENCHMARK DATA GENERATION
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Benchmark Data Generation.
 
 TEST_CASE("Benchmark: generate_employees creates table", "[benchmark]") {
     storage::Catalog catalog;
@@ -2407,15 +2325,13 @@ TEST_CASE("Benchmark: generate_orders creates table", "[benchmark]") {
     CHECK(tbl->col_count() == 4);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SECTION 40: REGRESSION & STRESS
-// ═══════════════════════════════════════════════════════════════════════════════
+// We test Regression & Stress.
 
 TEST_CASE("Regression: deeply nested AND/OR", "[e2e][regression]") {
     storage::Catalog catalog;
     create_test_table(catalog);
     auto res = run_query(catalog, "SELECT * FROM t WHERE (id = 1 OR id = 2) AND (dept = 'Engineering' OR dept = 'Sales');");
-    // id=1,dept=Eng ✓  id=2,dept=Sales ✓
+    // id=1,dept=Eng ?  id=2,dept=Sales ?
     CHECK(res.rows.size() == 2);
 }
 
@@ -2481,11 +2397,7 @@ TEST_CASE("Stress: multiple conditions in WHERE", "[e2e][stress]") {
     CHECK(res.rows.size() == 5);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
 //  INDEX INTEGRATION TESTS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// ───── Storage: BTreeIndex ─────
 
 TEST_CASE("BTreeIndex: build and exact lookup", "[storage][index]") {
     auto tbl = std::make_shared<storage::Table>();
@@ -2522,23 +2434,23 @@ TEST_CASE("BTreeIndex: range lookup", "[storage][index]") {
     idx.column_name = "val";
     idx.build(*tbl);
 
-    // BETWEEN 3 AND 7 → {3,4,5,6,7} = 5 rows
+    // BETWEEN 3 AND 7 -> {3,4,5,6,7} = 5 rows
     auto range = idx.lookup_range(storage::Value{(int64_t)3}, storage::Value{(int64_t)7});
     CHECK(range.size() == 5);
 
-    // < 4 → {1,2,3} = 3 rows
+    // < 4 -> {1,2,3} = 3 rows
     auto lt = idx.lookup_lt(storage::Value{(int64_t)4});
     CHECK(lt.size() == 3);
 
-    // > 8 → {9,10} = 2 rows
+    // > 8 -> {9,10} = 2 rows
     auto gt = idx.lookup_gt(storage::Value{(int64_t)8});
     CHECK(gt.size() == 2);
 
-    // <= 5 → {1,2,3,4,5} = 5 rows
+    // <= 5 -> {1,2,3,4,5} = 5 rows
     auto lte = idx.lookup_lte(storage::Value{(int64_t)5});
     CHECK(lte.size() == 5);
 
-    // >= 8 → {8,9,10} = 3 rows
+    // >= 8 -> {8,9,10} = 3 rows
     auto gte = idx.lookup_gte(storage::Value{(int64_t)8});
     CHECK(gte.size() == 3);
 }
@@ -2576,7 +2488,6 @@ TEST_CASE("BTreeIndex: string keys", "[storage][index]") {
     CHECK(r[0] == 1);
 }
 
-// ───── Catalog: create_index routing ─────
 
 TEST_CASE("Catalog: create hash vs btree index", "[storage][index]") {
     storage::Catalog catalog;
@@ -2597,7 +2508,6 @@ TEST_CASE("Catalog: create hash vs btree index", "[storage][index]") {
     CHECK(catalog.has_any_index("t", "nonexistent") == false);
 }
 
-// ───── Catalog: index maintenance on insert ─────
 
 TEST_CASE("Catalog: update_indexes_on_insert", "[storage][index]") {
     storage::Catalog catalog;
@@ -2620,7 +2530,6 @@ TEST_CASE("Catalog: update_indexes_on_insert", "[storage][index]") {
     CHECK(hidx->lookup_int(1).size() == 2);  // now 2 entries for key=1
 }
 
-// ───── Optimizer: INDEX_SCAN rewrite ─────
 
 TEST_CASE("Optimizer: rewrites equality filter to IndexScan", "[optimizer][index]") {
     storage::Catalog catalog;
@@ -2669,7 +2578,6 @@ TEST_CASE("Optimizer: btree range rewrite for greater-than", "[optimizer][index]
     CHECK(plan_str.find("RANGE") != std::string::npos);
 }
 
-// ───── Executor: IndexScan produces correct results ─────
 
 TEST_CASE("Executor: hash index equality returns correct rows", "[executor][index]") {
     storage::Catalog catalog;
@@ -2725,7 +2633,6 @@ TEST_CASE("Executor: index vs full scan produce same results", "[executor][index
     CHECK(res_no_idx.rows.size() == 1);
 }
 
-// ───── Planner: INDEX_SCAN to_string ─────
 
 TEST_CASE("Planner: IndexScan to_string for equality", "[planner][index]") {
     auto node = std::make_shared<planner::LogicalNode>();

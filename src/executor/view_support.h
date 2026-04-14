@@ -24,7 +24,7 @@ void materialize_dynamic_views_for_select(
     storage::Catalog& catalog,
     std::vector<std::string>& temp_tables);
 
-// Remove temporary view tables created by materialize_dynamic_views_for_select.
+// We remove temporary view tables created by materialize_dynamic_views_for_select.
 void cleanup_temporary_views(storage::Catalog& catalog, const std::vector<std::string>& temp_tables);
 
 } // namespace executor

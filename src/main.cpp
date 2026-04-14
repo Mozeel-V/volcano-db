@@ -17,7 +17,6 @@
 #include "benchmark/benchmark.h"
 #include <functional>
 
-// ───── DML expression evaluator (for UPDATE/DELETE WHERE clauses) ─────
 static storage::Value dml_eval(const ast::ExprPtr& e, const storage::Table* tbl, const storage::Row& row) {
     if (!e) return std::monostate{};
     switch (e->type) {
@@ -26,7 +25,7 @@ static storage::Value dml_eval(const ast::ExprPtr& e, const storage::Table* tbl,
         case ast::ExprType::LITERAL_STRING: return e->str_val;
         case ast::ExprType::LITERAL_NULL:   return std::monostate{};
         case ast::ExprType::COLUMN_REF: {
-            // Try qualified name first (for MERGE combined tables: "target.id")
+            // We try qualified name first (for MERGE combined tables: "target.id")
             if (!e->table_name.empty()) {
                 int ci = tbl->column_index(e->table_name + "." + e->column_name);
                 if (ci >= 0 && ci < (int)row.size()) return row[ci];
@@ -103,10 +102,10 @@ static planner::LogicalNodePtr last_explain_plan;
 
 static void print_help() {
     std::cout << R"(
-Simple Query Processor — Commands:
+Simple Query Processor -- Commands:
     SQL queries:      SELECT, CREATE TABLE, CREATE INDEX, CREATE VIEW, CREATE MATERIALIZED VIEW, INSERT, LOAD
   EXPLAIN <query>   Show query plan (tree format)
-  EXPLAIN ANALYZE   Show plan + execution stats (per-node)
+  EXPLAIN ANALYZE <query>   Show plan + execution stats (per-node)
   EXPLAIN FORMAT DOT <query>  Show plan in Graphviz DOT format
   BENCHMARK <query> Run query with performance profiling
 
@@ -318,7 +317,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     tbl->schema.push_back(cs);
                 }
                 catalog.add_table(tbl);
-                // Auto-create BTree index for PRIMARY KEY columns
+                // We auto-create BTree index for PRIMARY KEY columns
                 for (auto& cs : tbl->schema) {
                     if (cs.primary_key) {
                         std::string idx_name = "pk_" + ct.table_name + "_" + cs.name;
@@ -368,7 +367,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto* tbl = catalog.get_table(ins.table_name);
                 if (!tbl) throw std::runtime_error("Table not found: " + ins.table_name);
 
-                // Fire BEFORE INSERT triggers
+                // We fire BEFORE INSERT triggers
                 for (auto* td : catalog.get_triggers(ins.table_name, storage::TriggerDef::ON_INSERT)) {
                     if (td->when == storage::TriggerDef::BEFORE) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
                 }
@@ -389,14 +388,14 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                         }
                     }
 
-                    // Enforce NOT NULL constraints
+                    // We enforce NOT NULL constraints
                     for (size_t i = 0; i < tbl->schema.size(); i++) {
                         if (tbl->schema[i].not_null && storage::value_is_null(row[i])) {
                             throw std::runtime_error("NOT NULL constraint violated for column '" + tbl->schema[i].name + "'");
                         }
                     }
 
-                    // Enforce UNIQUE / PRIMARY KEY constraints
+                    // We enforce UNIQUE / PRIMARY KEY constraints
                     for (size_t i = 0; i < tbl->schema.size(); i++) {
                         if (tbl->schema[i].is_unique || tbl->schema[i].primary_key) {
                             if (storage::value_is_null(row[i])) continue;  // NULL is allowed in UNIQUE
@@ -408,14 +407,14 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                         }
                     }
 
-                    // Enforce CHECK constraints
+                    // We enforce CHECK constraints
                     for (auto& chk : tbl->check_constraints) {
                         if (!dml_eval_bool(chk, tbl, row)) {
                             throw std::runtime_error("CHECK constraint violated");
                         }
                     }
 
-                    // Enforce FOREIGN KEY constraints
+                    // We enforce FOREIGN KEY constraints
                     for (auto& fk : tbl->foreign_keys) {
                         int fk_idx = tbl->column_index(fk.column_name);
                         if (fk_idx < 0 || storage::value_is_null(row[fk_idx])) continue;
@@ -435,7 +434,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     inserted++;
                 }
 
-                // Fire AFTER INSERT triggers
+                // We fire AFTER INSERT triggers
                 for (auto* td : catalog.get_triggers(ins.table_name, storage::TriggerDef::ON_INSERT)) {
                     if (td->when == storage::TriggerDef::AFTER) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
                 }
@@ -448,12 +447,12 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto* tbl = catalog.get_table(upd.table_name);
                 if (!tbl) throw std::runtime_error("Table not found: " + upd.table_name);
 
-                // Fire BEFORE UPDATE triggers
+                // We fire BEFORE UPDATE triggers
                 for (auto* td : catalog.get_triggers(upd.table_name, storage::TriggerDef::ON_UPDATE)) {
                     if (td->when == storage::TriggerDef::BEFORE) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
                 }
 
-                // Resolve column indices for assignments
+                // We resolve column indices for assignments
                 std::vector<std::pair<int, ast::ExprPtr>> resolved;
                 for (auto& [col, expr] : upd.assignments) {
                     int idx = tbl->column_index(col);
@@ -475,14 +474,14 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                         row[idx] = dml_eval(expr, tbl, row);
                     }
 
-                    // Enforce NOT NULL on updated columns
+                    // We enforce NOT NULL on updated columns
                     for (auto& [idx, expr] : resolved) {
                         if (tbl->schema[idx].not_null && storage::value_is_null(row[idx])) {
                             throw std::runtime_error("NOT NULL constraint violated for column '" + tbl->schema[idx].name + "'");
                         }
                     }
 
-                    // Enforce UNIQUE / PRIMARY KEY on updated columns
+                    // We enforce UNIQUE / PRIMARY KEY on updated columns
                     for (auto& [idx, expr] : resolved) {
                         if (tbl->schema[idx].is_unique || tbl->schema[idx].primary_key) {
                             if (storage::value_is_null(row[idx])) continue;
@@ -495,14 +494,14 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                         }
                     }
 
-                    // Enforce CHECK constraints
+                    // We enforce CHECK constraints
                     for (auto& chk : tbl->check_constraints) {
                         if (!dml_eval_bool(chk, tbl, row)) {
                             throw std::runtime_error("CHECK constraint violated");
                         }
                     }
 
-                    // Enforce FOREIGN KEY constraints on updated columns
+                    // We enforce FOREIGN KEY constraints on updated columns
                     for (auto& fk : tbl->foreign_keys) {
                         int fk_idx = tbl->column_index(fk.column_name);
                         if (fk_idx < 0 || storage::value_is_null(row[fk_idx])) continue;
@@ -523,7 +522,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     updated++;
                 }
 
-                // Rebuild indexes for this table
+                // We rebuild indexes for this table
                 for (auto& [key, idx] : catalog.indexes) {
                     if (idx->table_name == upd.table_name) idx->build(*tbl);
                 }
@@ -531,7 +530,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     if (idx->table_name == upd.table_name) idx->build(*tbl);
                 }
 
-                // Fire AFTER UPDATE triggers
+                // We fire AFTER UPDATE triggers
                 for (auto* td : catalog.get_triggers(upd.table_name, storage::TriggerDef::ON_UPDATE)) {
                     if (td->when == storage::TriggerDef::AFTER) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
                 }
@@ -544,14 +543,14 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto* tbl = catalog.get_table(del.table_name);
                 if (!tbl) throw std::runtime_error("Table not found: " + del.table_name);
 
-                // Fire BEFORE DELETE triggers
+                // We fire BEFORE DELETE triggers
                 for (auto* td : catalog.get_triggers(del.table_name, storage::TriggerDef::ON_DELETE)) {
                     if (td->when == storage::TriggerDef::BEFORE) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
                 }
 
                 size_t before = tbl->rows.size();
 
-                // Collect rows to delete and check FK references
+                // We collect rows to delete and check FK references
                 std::vector<size_t> to_delete;
                 for (size_t i = 0; i < tbl->rows.size(); i++) {
                     if (!del.where_clause || dml_eval_bool(del.where_clause, tbl, tbl->rows[i])) {
@@ -559,7 +558,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     }
                 }
 
-                // Check if any child table references the rows being deleted
+                // We check if any child table references the rows being deleted
                 for (size_t di : to_delete) {
                     auto& drow = tbl->rows[di];
                     for (auto& [tname, child_tbl] : catalog.tables) {
@@ -577,7 +576,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     }
                 }
 
-                // Perform deletion
+                // We perform deletion
                 if (!del.where_clause) {
                     tbl->rows.clear();
                 } else {
@@ -591,7 +590,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 }
                 size_t deleted = before - tbl->rows.size();
 
-                // Rebuild indexes for this table
+                // We rebuild indexes for this table
                 for (auto& [key, idx] : catalog.indexes) {
                     if (idx->table_name == del.table_name) idx->build(*tbl);
                 }
@@ -599,7 +598,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     if (idx->table_name == del.table_name) idx->build(*tbl);
                 }
 
-                // Fire AFTER DELETE triggers
+                // We fire AFTER DELETE triggers
                 for (auto* td : catalog.get_triggers(del.table_name, storage::TriggerDef::ON_DELETE)) {
                     if (td->when == storage::TriggerDef::AFTER) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
                 }
@@ -635,18 +634,18 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                         std::cout << opt_plan->to_dot_string();
                     } else {
                         // Tree-connector output
-                        std::cout << "\n── Logical Plan (before optimization) ──\n";
+                        std::cout << "\n-- Logical Plan (before optimization) --\n";
                         std::cout << plan->to_tree_string();
 
-                        std::cout << "\n── Optimized Plan ──\n";
+                        std::cout << "\n-- Optimized Plan --\n";
                         std::cout << opt_plan->to_tree_string();
 
                         if (stmt->explain_analyze) {
                             auto result = executor::execute(opt_plan, catalog);
-                            std::cout << "\n── Optimized Plan (with actual stats) ──\n";
+                            std::cout << "\n-- Optimized Plan (with actual stats) --\n";
                             std::cout << opt_plan->to_tree_string();
 
-                            std::cout << "\n── Execution Statistics ──\n";
+                            std::cout << "\n-- Execution Statistics --\n";
                             std::cout << "  Rows scanned:     " << result.stats.rows_scanned << "\n";
                             std::cout << "  Rows filtered:    " << result.stats.rows_filtered << "\n";
                             std::cout << "  Join comparisons: " << result.stats.join_comparisons << "\n";
@@ -658,7 +657,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                         }
                     }
 
-                    // Store last plan for .plan command
+                    // We store last plan for .plan command
                     last_explain_plan = opt_plan;
 
                     executor::cleanup_temporary_views(catalog, temp_tables);
@@ -705,7 +704,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto* tbl = catalog.get_table(alt.table_name);
                 if (!tbl) { std::cout << "Error: table not found: " << alt.table_name << "\n"; break; }
 
-                // Check column doesn't already exist
+                // We check column doesn't already exist
                 if (tbl->column_index(alt.column_name) >= 0) {
                     std::cout << "Error: column '" << alt.column_name << "' already exists in table '" << alt.table_name << "'\n";
                     break;
@@ -719,12 +718,12 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 // Append to schema
                 tbl->schema.push_back({alt.column_name, dt});
 
-                // Add NULL to every existing row
+                // Adding NULL to every existing row
                 for (auto& row : tbl->rows) {
                     row.push_back(std::monostate{});
                 }
 
-                // Rebuild indexes for this table
+                // We rebuild indexes for this table
                 for (auto& [key, idx] : catalog.indexes) {
                     if (idx->table_name == alt.table_name) idx->build(*tbl);
                 }
@@ -751,17 +750,17 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     break;
                 }
 
-                // Erase from schema
+                // Erasing from schema
                 tbl->schema.erase(tbl->schema.begin() + col_idx);
 
-                // Erase from every row
+                // We erase from every row
                 for (auto& row : tbl->rows) {
                     if (col_idx < (int)row.size()) {
                         row.erase(row.begin() + col_idx);
                     }
                 }
 
-                // Remove any indexes on the dropped column, rebuild remaining
+                // We remove any indexes on the dropped column, rebuild remaining
                 std::string drop_key = alt.table_name + "." + alt.column_name;
                 catalog.indexes.erase(drop_key);
                 catalog.btree_indexes.erase(drop_key);
@@ -792,10 +791,10 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     break;
                 }
 
-                // Update schema
+                // We update schema
                 tbl->schema[col_idx].name = alt.new_name;
 
-                // Update index column_name fields and re-key index maps
+                // Updating index column_name fields and re-key index maps
                 std::string old_key = alt.table_name + "." + alt.column_name;
                 std::string new_key = alt.table_name + "." + alt.new_name;
 
@@ -829,13 +828,13 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     break;
                 }
 
-                // Move table to new name
+                // We move table to new name
                 auto tbl = it->second;
                 catalog.tables.erase(it);
                 tbl->name = alt.new_name;
                 catalog.tables[alt.new_name] = tbl;
 
-                // Update hash index table_name fields and re-key
+                // Updating hash index table_name fields and re-key
                 std::vector<std::pair<std::string, std::shared_ptr<storage::HashIndex>>> h_updates;
                 for (auto hi = catalog.indexes.begin(); hi != catalog.indexes.end(); ) {
                     if (hi->second->table_name == alt.table_name) {
@@ -849,7 +848,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 }
                 for (auto& [k, v] : h_updates) catalog.indexes[k] = v;
 
-                // Update btree index table_name fields and re-key
+                // Updating btree index table_name fields and re-key
                 std::vector<std::pair<std::string, std::shared_ptr<storage::BTreeIndex>>> b_updates;
                 for (auto bi = catalog.btree_indexes.begin(); bi != catalog.btree_indexes.end(); ) {
                     if (bi->second->table_name == alt.table_name) {
@@ -863,7 +862,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 }
                 for (auto& [k, v] : b_updates) catalog.btree_indexes[k] = v;
 
-                // Update views that reference the old table name
+                // Updating views that reference the old table name
                 auto vi = catalog.views.find(alt.table_name);
                 if (vi != catalog.views.end()) {
                     auto view_def = vi->second;
@@ -878,9 +877,9 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 if (!catalog.get_table(stmt->drop_name)) {
                     std::cout << "Table not found: " << stmt->drop_name << "\n"; break;
                 }
-                // Remove all indexes on this table
+                // We remove all indexes on this table
                 catalog.remove_indexes_for_table(stmt->drop_name);
-                // Remove any views associated with this table
+                // We remove any views associated with this table
                 catalog.views.erase(stmt->drop_name);
                 catalog.tables.erase(stmt->drop_name);
                 std::cout << "Table '" << stmt->drop_name << "' dropped.\n";
@@ -904,7 +903,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 if (!tbl) { std::cout << "Table not found: " << stmt->drop_name << "\n"; break; }
                 size_t count = tbl->rows.size();
                 tbl->rows.clear();
-                // Rebuild (clear) indexes
+                // We rebuild (clear) indexes
                 for (auto& [key, idx] : catalog.indexes)
                     if (idx->table_name == stmt->drop_name) idx->build(*tbl);
                 for (auto& [key, idx] : catalog.btree_indexes)
@@ -919,7 +918,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto* source = catalog.get_table(mg.source_table);
                 if (!source) throw std::runtime_error("Source table not found: " + mg.source_table);
 
-                // Resolve SET column indices on the target table
+                // We resolve SET column indices on the target table
                 std::vector<std::pair<int, ast::ExprPtr>> resolved_set;
                 for (auto& [col, expr] : mg.update_assignments) {
                     int idx = target->column_index(col);
@@ -927,7 +926,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     resolved_set.emplace_back(idx, expr);
                 }
 
-                // Build a combined virtual table for ON condition evaluation
+                // We build a combined virtual table for ON condition evaluation
                 // Schema: [target.col1, target.col2, ..., source.col1, source.col2, ...]
                 storage::Table combined;
                 for (auto& cd : target->schema)
@@ -943,13 +942,13 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     // Only check against original target rows (not newly inserted ones)
                     for (size_t ti = 0; ti < orig_target_size; ti++) {
                         auto& tgt_row = target->rows[ti];
-                        // Build combined row: [target values..., source values...]
+                        // We build combined row: [target values..., source values...]
                         storage::Row combo;
                         combo.insert(combo.end(), tgt_row.begin(), tgt_row.end());
                         combo.insert(combo.end(), src_row.begin(), src_row.end());
 
                         if (mg.on_condition && dml_eval_bool(mg.on_condition, &combined, combo)) {
-                            // WHEN MATCHED → UPDATE the target row
+                            // WHEN MATCHED -> UPDATE the target row
                             for (auto& [idx, expr] : resolved_set) {
                                 tgt_row[idx] = dml_eval(expr, source, src_row);
                             }
@@ -960,7 +959,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     }
 
                     if (!matched) {
-                        // WHEN NOT MATCHED → INSERT into target
+                        // WHEN NOT MATCHED -> INSERT into target
                         if (mg.insert_values.empty()) continue;
                         auto& val_exprs = mg.insert_values[0];
                         if (val_exprs.size() != target->schema.size()) {
@@ -977,7 +976,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     }
                 }
 
-                // Rebuild indexes on target if rows were updated
+                // Rebuilding indexes on target if rows were updated
                 if (updated > 0) {
                     for (auto& [key, idx] : catalog.indexes) {
                         if (idx->table_name == mg.target_table) idx->build(*target);
@@ -1082,7 +1081,7 @@ static bool handle_dot_command(const std::string& line, storage::Catalog& catalo
         if (arg == "dot") {
             std::cout << last_explain_plan->to_dot_string();
         } else {
-            std::cout << "\n── Last Optimized Plan ──\n";
+            std::cout << "\n-- Last Optimized Plan --\n";
             std::cout << last_explain_plan->to_tree_string();
         }
         return true;
@@ -1185,10 +1184,10 @@ static bool run_script_file(const std::string& path, storage::Catalog& catalog) 
 int main(int argc, char* argv[]) {
     storage::Catalog catalog;
 
-    std::cout << "╔══════════════════════════════════════════════════╗\n";
-    std::cout << "║     Simple Query Processor & Optimizer (SQP)     ║\n";
-    std::cout << "║       Type .help for available commands          ║\n";
-    std::cout << "╚══════════════════════════════════════════════════╝\n\n";
+    std::cout << "?==================================================?\n";
+    std::cout << "?     Simple Query Processor & Optimizer (SQP)     ?\n";
+    std::cout << "?       Type .help for available commands          ?\n";
+    std::cout << "?==================================================?\n\n";
 
     // If argument provided, run it as a script
     if (argc > 1) {

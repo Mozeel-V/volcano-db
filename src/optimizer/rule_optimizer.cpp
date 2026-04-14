@@ -7,7 +7,6 @@ namespace optimizer {
 using namespace planner;
 using namespace ast;
 
-// ───── Helper: collect conjuncts from an AND-tree ─────
 static void collect_conjuncts(ExprPtr expr, std::vector<ExprPtr>& out) {
     if (!expr) return;
     if (expr->type == ExprType::BINARY_OP && expr->bin_op == BinOp::OP_AND) {
@@ -27,7 +26,6 @@ static ExprPtr conjoin(const std::vector<ExprPtr>& preds) {
     return result;
 }
 
-// ───── Helper: check if an expression references only a specific table ─────
 static bool expr_references_table(const ExprPtr& expr, const std::string& table) {
     if (!expr) return false;
     if (expr->type == ExprType::COLUMN_REF) {
@@ -55,7 +53,6 @@ static bool expr_only_references(const ExprPtr& expr, const std::string& table) 
     return ok;
 }
 
-// ───── Get table name from a scan subtree ─────
 static std::string get_scan_table(const LogicalNodePtr& node) {
     if (!node) return "";
     if (node->type == LogicalNodeType::TABLE_SCAN) return node->table_name;
@@ -63,7 +60,6 @@ static std::string get_scan_table(const LogicalNodePtr& node) {
     return "";
 }
 
-// ═══════ RULE 1: Selection (predicate) pushdown ═══════
 static LogicalNodePtr push_selection_down(LogicalNodePtr node) {
     if (!node) return nullptr;
 
@@ -121,7 +117,7 @@ static LogicalNodePtr push_selection_down(LogicalNodePtr node) {
     if (node->type == LogicalNodeType::FILTER && node->left &&
         node->left->type == LogicalNodeType::PROJECTION) {
         auto proj = node->left;
-        // Move filter below projection
+        // We move filter below projection
         node->left = proj->left;
         proj->left = node;
         // Recurse again
@@ -132,11 +128,9 @@ static LogicalNodePtr push_selection_down(LogicalNodePtr node) {
     return node;
 }
 
-// ═══════ RULE 2: Projection pushdown ═══════
 // Simplified: we don't remove columns from early scans, but we ensure
 // projections don't block filter pushdown (handled above).
 
-// ═══════ RULE 3: Join reordering (simple heuristic) ═══════
 // For a chain of cross/inner joins, put smaller tables first
 static LogicalNodePtr reorder_joins(LogicalNodePtr node, storage::Catalog& catalog) {
     if (!node) return nullptr;
@@ -157,7 +151,6 @@ static LogicalNodePtr reorder_joins(LogicalNodePtr node, storage::Catalog& catal
     return node;
 }
 
-// ═══════ Combined rule-based optimizer ═══════
 LogicalNodePtr optimize_rules(LogicalNodePtr plan) {
     plan = push_selection_down(plan);
     return plan;

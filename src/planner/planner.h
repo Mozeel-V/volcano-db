@@ -7,7 +7,6 @@
 
 namespace planner {
 
-// ───── Logical plan node types ─────
 enum class LogicalNodeType {
     TABLE_SCAN,
     INDEX_SCAN,
@@ -76,10 +75,8 @@ struct LogicalNode {
 
 using LogicalNodePtr = std::shared_ptr<LogicalNode>;
 
-// ───── Logical plan builder ─────
 LogicalNodePtr build_logical_plan(const ast::SelectStmt& stmt, storage::Catalog& catalog);
 
-// ───── Physical plan (same structure, with algorithm choices) ─────
 using PhysicalNodePtr = LogicalNodePtr;  // reuse for simplicity
 
 } // namespace planner

@@ -34,8 +34,6 @@ std::vector<size_t> HashIndex::lookup_str(const std::string& key) const {
     return it->second;
 }
 
-// ───── BTreeIndex implementation ─────
-
 void BTreeIndex::build(const Table& table) {
     int col_idx = table.column_index(column_name);
     if (col_idx < 0) throw std::runtime_error("Column not found for index: " + column_name);

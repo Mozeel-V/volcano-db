@@ -79,7 +79,7 @@ void Catalog::update_indexes_on_insert(const std::string& table_name, size_t row
 
     const Row& row = tbl->rows[row_idx];
 
-    // Update hash indexes
+    // We update hash indexes
     for (auto& [key, idx] : indexes) {
         if (idx->table_name == table_name) {
             int col_idx = tbl->column_index(idx->column_name);
@@ -96,7 +96,7 @@ void Catalog::update_indexes_on_insert(const std::string& table_name, size_t row
         }
     }
 
-    // Update btree indexes
+    // We update btree indexes
     for (auto& [key, idx] : btree_indexes) {
         if (idx->table_name == table_name) {
             int col_idx = tbl->column_index(idx->column_name);
@@ -125,23 +125,14 @@ void Catalog::remove_indexes_for_table(const std::string& table_name) {
 }
 
 bool Catalog::drop_index_by_name(const std::string& index_name) {
-    // Search hash indexes by comparing the index_name stored in the key or the index itself
-    // Index keys are "table.column", but we need to find by the user-specified index name.
-    // Since the catalog doesn't store index_name, we search by key pattern.
-    // Actually, let's search by matching the key: the index_name given at CREATE INDEX
-    // is not stored in HashIndex/BTreeIndex — we need to match against the map key.
-    // The standard key format is "table.column". The user may use the original index name.
-    // For simplicity, match against the key directly.
-    
-    // Try hash indexes
+    // We try hash indexes
     for (auto it = indexes.begin(); it != indexes.end(); ++it) {
-        // The key format is "table.column" — try matching index_name against the key
         if (it->first == index_name) {
             indexes.erase(it);
             return true;
         }
     }
-    // Try btree indexes
+    // We try btree indexes
     for (auto it = btree_indexes.begin(); it != btree_indexes.end(); ++it) {
         if (it->first == index_name) {
             btree_indexes.erase(it);
@@ -179,8 +170,6 @@ size_t Catalog::column_distinct(const std::string& table, const std::string& col
     if (it == tables.end()) return 0;
     return it->second->distinct_values(col);
 }
-
-// ───── Value helpers ─────
 
 bool value_is_null(const Value& v) {
     return std::holds_alternative<std::monostate>(v);
@@ -265,8 +254,6 @@ std::string value_display(const Value& v) {
     }
     return std::get<std::string>(v);
 }
-
-// ───── Trigger management ─────
 
 void Catalog::add_trigger(std::shared_ptr<TriggerDef> t) {
     triggers.push_back(std::move(t));

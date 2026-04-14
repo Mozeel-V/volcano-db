@@ -23,7 +23,6 @@ extern int yylineno;
 "--"[^\n]*          { /* single-line comment */ }
 "/*"([^*]|\*+[^*/])*\*+"/"  { /* multi-line comment */ }
 
-    /* ── Keywords ── */
 "SELECT"            { return SELECT; }
 "DISTINCT"          { return DISTINCT; }
 "FROM"              { return FROM; }
@@ -123,7 +122,6 @@ extern int yylineno;
 "REFERENCES"        { return REFERENCES; }
 "BEGIN"             { return BEGIN_KW; }
 
-    /* ── Operators ── */
 "<="                { return LEQ; }
 ">="                { return GEQ; }
 "!="                { return NEQ; }
@@ -142,7 +140,6 @@ extern int yylineno;
 ";"                 { return ';'; }
 "."                 { return '.'; }
 
-    /* ── Literals ── */
 [0-9]+\.[0-9]+      {
     yylval.float_val = atof(yytext);
     return FLOAT_LITERAL;
@@ -160,7 +157,6 @@ extern int yylineno;
     return STRING_LITERAL;
 }
 
-    /* ── Identifiers ── */
 [a-zA-Z_][a-zA-Z0-9_]* {
     yylval.str_val = strdup(yytext);
     return IDENTIFIER;

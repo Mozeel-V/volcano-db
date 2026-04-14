@@ -5,7 +5,6 @@
 
 namespace planner {
 
-// ───── Helper: generate node label string ─────
 static std::string node_label(const LogicalNode& n) {
     std::string s;
     switch (n.type) {
@@ -53,7 +52,6 @@ static std::string node_label(const LogicalNode& n) {
     return s;
 }
 
-// ───── Pretty-print plan tree (legacy indented format) ─────
 std::string LogicalNode::to_string(int indent) const {
     std::string pad(indent * 2, ' ');
     std::string s = pad + node_label(*this);
@@ -67,11 +65,10 @@ std::string LogicalNode::to_string(int indent) const {
     return s;
 }
 
-// ───── Tree-connector visualization ─────
 std::string LogicalNode::to_tree_string(const std::string& prefix, bool is_last) const {
     std::string line;
     line += prefix;
-    line += is_last ? "└── " : "├── ";
+    line += is_last ? "|--" : "|--";
     line += node_label(*this);
 
     // Cost estimates
@@ -93,7 +90,7 @@ std::string LogicalNode::to_tree_string(const std::string& prefix, bool is_last)
     }
     line += "\n";
 
-    std::string child_prefix = prefix + (is_last ? "    " : "│   ");
+    std::string child_prefix = prefix + (is_last ? "    " : "|   ");
     if (left && right) {
         line += left->to_tree_string(child_prefix, false);
         line += right->to_tree_string(child_prefix, true);
@@ -103,7 +100,6 @@ std::string LogicalNode::to_tree_string(const std::string& prefix, bool is_last)
     return line;
 }
 
-// ───── DOT/Graphviz export ─────
 static void to_dot_helper(const LogicalNode& n, std::string& dot, int& id) {
     int my_id = id++;
     std::string label = node_label(n);
@@ -160,7 +156,7 @@ std::string LogicalNode::to_dot_string() const {
     return dot;
 }
 
-// ───── Build logical plan from AST ─────
+// Building logical plan from AST
 
 static bool has_aggregates(const ast::ExprPtr& expr) {
     if (!expr) return false;
@@ -194,7 +190,7 @@ static LogicalNodePtr build_from(const ast::TableRefPtr& tr, storage::Catalog& c
         node->right = build_from(tr->right, catalog);
         return node;
     }
-    // Subquery — create a scan placeholder
+    // Subquery -- create a scan placeholder
     auto node = std::make_shared<LogicalNode>();
     node->type = LogicalNodeType::TABLE_SCAN;
     node->table_name = "(subquery)";
@@ -204,7 +200,7 @@ static LogicalNodePtr build_from(const ast::TableRefPtr& tr, storage::Catalog& c
 LogicalNodePtr build_logical_plan(const ast::SelectStmt& stmt, storage::Catalog& catalog) {
     LogicalNodePtr current;
 
-    // 1. FROM clause → table scans / joins
+    // 1. FROM clause -> table scans / joins
     if (stmt.from_clause.size() == 1) {
         current = build_from(stmt.from_clause[0], catalog);
     } else if (stmt.from_clause.size() > 1) {
@@ -220,7 +216,7 @@ LogicalNodePtr build_logical_plan(const ast::SelectStmt& stmt, storage::Catalog&
         }
     }
 
-    // 2. WHERE → Filter
+    // 2. WHERE -> Filter
     if (stmt.where_clause) {
         auto filter = std::make_shared<LogicalNode>();
         filter->type = LogicalNodeType::FILTER;
@@ -248,7 +244,7 @@ LogicalNodePtr build_logical_plan(const ast::SelectStmt& stmt, storage::Catalog&
         current = agg;
     }
 
-    // 4. HAVING → Filter on aggregated result
+    // 4. HAVING -> Filter on aggregated result
     if (stmt.having_clause) {
         auto filter = std::make_shared<LogicalNode>();
         filter->type = LogicalNodeType::FILTER;
@@ -277,7 +273,7 @@ LogicalNodePtr build_logical_plan(const ast::SelectStmt& stmt, storage::Catalog&
         current = dist;
     }
 
-    // 7. ORDER BY → Sort
+    // 7. ORDER BY -> Sort
     if (!stmt.order_by.empty()) {
         auto sort = std::make_shared<LogicalNode>();
         sort->type = LogicalNodeType::SORT;

@@ -2,8 +2,6 @@
 
 namespace ast {
 
-// ───── Expr factory methods ─────
-
 ExprPtr Expr::make_column(const std::string& col, const std::string& tbl) {
     auto e = std::make_shared<Expr>();
     e->type = ExprType::COLUMN_REF;
@@ -64,8 +62,6 @@ ExprPtr Expr::make_func(const std::string& name, std::vector<ExprPtr> args, bool
     e->distinct_func = dist;
     return e;
 }
-
-// ───── Pretty-print helpers ─────
 
 static std::string binop_str(BinOp op) {
     switch (op) {
