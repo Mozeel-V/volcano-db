@@ -7,12 +7,18 @@
 
 namespace executor {
 
+struct EvalCtx;
+
 struct ExecStats {
     size_t rows_scanned = 0;
     size_t rows_filtered = 0;
     size_t join_comparisons = 0;
     size_t rows_produced = 0;
+    size_t subqueries_executed = 0;
+    size_t subqueries_cached = 0;
+    const EvalCtx* outer_ctx = nullptr;
     double exec_time_ms = 0;
+    std::unordered_map<const ast::Expr*, storage::Value> subquery_cache;
 };
 
 struct ExecResult {
@@ -22,6 +28,6 @@ struct ExecResult {
 };
 
 // Execute a physical plan tree
-ExecResult execute(planner::PhysicalNodePtr plan, storage::Catalog& catalog);
+ExecResult execute(planner::PhysicalNodePtr plan, storage::Catalog& catalog, const EvalCtx* outer_ctx = nullptr);
 
 } // namespace executor

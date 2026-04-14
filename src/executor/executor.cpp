@@ -16,8 +16,12 @@ using namespace ast;
 
 // Evaluation context: maps column name → index in current row
 struct EvalCtx {
+    storage::Catalog* catalog = nullptr;
     std::vector<std::string> col_names;
     const Row* row = nullptr;
+    const EvalCtx* outer = nullptr;
+    mutable bool accessed_outer = false;
+    ExecStats* stats = nullptr;
 
     int find_col(const std::string& name) const {
         for (int i = (int)col_names.size() - 1; i >= 0; i--) {
@@ -29,11 +33,15 @@ struct EvalCtx {
         return -1;
     }
 
-    int find_col_qualified(const std::string& tbl, const std::string& name) const {
+    int find_col_qualified(const std::string& tbl, const std::string& name, bool strict = false) const {
         std::string full = tbl + "." + name;
         for (int i = (int)col_names.size() - 1; i >= 0; i--) {
             if (col_names[i] == full) return i;
+            // Hack for unqualified storage since exec_scan doesn't prefix
+            // If the table names happen to match the requested tbl prefix somewhere else we'd need more
+            // but for simple subqueries, we'll try a strict match first
         }
+        if (strict) return -1;
         // Fallback: search by column name alone
         return find_col(name);
     }
@@ -48,14 +56,40 @@ static Value eval_expr(const ExprPtr& expr, const EvalCtx& ctx) {
         case ExprType::LITERAL_NULL:   return std::monostate{};
         case ExprType::STAR:           return std::monostate{};
         case ExprType::COLUMN_REF: {
-            int idx;
+            int idx = -1;
+            // 1. Try checking strictly if table name is specified
             if (!expr->table_name.empty()) {
-                idx = ctx.find_col_qualified(expr->table_name, expr->column_name);
+                idx = ctx.find_col_qualified(expr->table_name, expr->column_name, true);
+                if (idx >= 0 && ctx.row && idx < (int)ctx.row->size()) {
+                    return (*ctx.row)[idx];
+                }
             } else {
+                // 1b. If no table name specified, ALWAYS prioritize local unqualified search FIRST
                 idx = ctx.find_col(expr->column_name);
+                if (idx >= 0 && ctx.row && idx < (int)ctx.row->size()) {
+                    return (*ctx.row)[idx];
+                }
             }
-            if (idx < 0 || !ctx.row || idx >= (int)ctx.row->size()) return std::monostate{};
-            return (*ctx.row)[idx];
+
+            // 2. Fallback to outer context
+            if (ctx.outer) {
+                Value outer_val = eval_expr(expr, *ctx.outer);
+                if (!std::holds_alternative<std::monostate>(outer_val)) {
+                    ctx.accessed_outer = true;
+                    ctx.outer->accessed_outer = true; // Propagate upwards to trigger correlated cache omission
+                    return outer_val;
+                }
+            }
+
+            // 3. Last resort fallback for locally qualified columns that were stripped of prefixes
+            if (!expr->table_name.empty()) {
+                idx = ctx.find_col(expr->column_name);
+                if (idx >= 0 && ctx.row && idx < (int)ctx.row->size()) {
+                    return (*ctx.row)[idx];
+                }
+            }
+
+            return std::monostate{};
         }
         case ExprType::BINARY_OP: {
             Value lv = eval_expr(expr->left, ctx);
@@ -122,13 +156,65 @@ static Value eval_expr(const ExprPtr& expr, const EvalCtx& ctx) {
                 return (*ctx.row)[idx];
             return std::monostate{};
         }
+        case ExprType::SUBQUERY: {
+            if (!ctx.catalog || !expr->subquery) return std::monostate{};
+            if (ctx.stats && ctx.stats->subquery_cache.count(expr.get())) {
+                ctx.stats->subqueries_cached++;
+                return ctx.stats->subquery_cache[expr.get()];
+            }
+            ctx.accessed_outer = false;
+            auto plan = planner::build_logical_plan(*expr->subquery, *ctx.catalog);
+            if (ctx.stats) ctx.stats->subqueries_executed++;
+            auto res = execute(plan, *ctx.catalog, &ctx);
+            if (res.rows.empty() || res.rows[0].empty()) return std::monostate{};
+            Value val = res.rows[0][0];
+            if (!ctx.accessed_outer && ctx.stats) {
+                ctx.stats->subquery_cache[expr.get()] = val;
+            }
+            return val; // Scalar
+        }
+        case ExprType::EXISTS_EXPR: {
+            if (!ctx.catalog || !expr->subquery) return (int64_t)0;
+            if (ctx.stats && ctx.stats->subquery_cache.count(expr.get())) {
+                ctx.stats->subqueries_cached++;
+                return ctx.stats->subquery_cache[expr.get()];
+            }
+            ctx.accessed_outer = false;
+            auto plan = planner::build_logical_plan(*expr->subquery, *ctx.catalog);
+            if (ctx.stats) ctx.stats->subqueries_executed++;
+            auto res = execute(plan, *ctx.catalog, &ctx);
+            Value val = (int64_t)(!res.rows.empty() ? 1 : 0);
+            if (!ctx.accessed_outer && ctx.stats) {
+                ctx.stats->subquery_cache[expr.get()] = val;
+            }
+            return val;
+        }
         case ExprType::IN_EXPR: {
             Value lv = eval_expr(expr->left, ctx);
-            for (auto& item : expr->in_list) {
-                Value iv = eval_expr(item, ctx);
-                if (value_equal(lv, iv)) return (int64_t)1;
+            if (expr->subquery) {
+                if (!ctx.catalog) return (int64_t)0;
+                ctx.accessed_outer = false;
+                auto plan = planner::build_logical_plan(*expr->subquery, *ctx.catalog);
+                if (ctx.stats) ctx.stats->subqueries_executed++;
+                auto res = execute(plan, *ctx.catalog, &ctx);
+                Value in_result = (int64_t)0;
+                for (const auto& row : res.rows) {
+                    if (!row.empty() && value_equal(lv, row[0])) {
+                        in_result = (int64_t)1;
+                        break;
+                    }
+                }
+                // We cannot cache the execution result for IN_EXPR directly using Value since it depends on lv
+                // But we can cache it. Wait, uncorrelated IN_EXPR is optimized via Hash lookup in Phase 3.
+                // For now, if accessed_outer is true, we just pass without caching here.
+                return in_result;
+            } else {
+                for (auto& item : expr->in_list) {
+                    Value iv = eval_expr(item, ctx);
+                    if (value_equal(lv, iv)) return (int64_t)1;
+                }
+                return (int64_t)0;
             }
-            return (int64_t)0;
         }
         case ExprType::BETWEEN_EXPR: {
             Value v = eval_expr(expr->operand, ctx);
@@ -263,7 +349,10 @@ static ExecResult exec_index_scan(const LogicalNodePtr& node, Catalog& catalog, 
 static ExecResult exec_filter(const LogicalNodePtr& node, Catalog& catalog, ExecStats& stats) {
     auto child = exec_node(node->left, catalog, stats);
     EvalCtx ctx;
+    ctx.catalog = &catalog;
     ctx.col_names = child.columns;
+    ctx.outer = stats.outer_ctx;
+    ctx.stats = &stats;
 
     ExecResult res;
     res.columns = child.columns;
@@ -281,7 +370,10 @@ static ExecResult exec_filter(const LogicalNodePtr& node, Catalog& catalog, Exec
 static ExecResult exec_projection(const LogicalNodePtr& node, Catalog& catalog, ExecStats& stats) {
     auto child = exec_node(node->left, catalog, stats);
     EvalCtx ctx;
+    ctx.catalog = &catalog;
     ctx.col_names = child.columns;
+    ctx.outer = stats.outer_ctx;
+    ctx.stats = &stats;
 
     ExecResult res;
     // Build output column names
@@ -318,7 +410,10 @@ static ExecResult exec_nested_loop_join(const LogicalNodePtr& node, Catalog& cat
     res.columns.insert(res.columns.end(), right.columns.begin(), right.columns.end());
 
     EvalCtx ctx;
+    ctx.catalog = &catalog;
     ctx.col_names = res.columns;
+    ctx.outer = stats.outer_ctx;
+    ctx.stats = &stats;
 
     for (auto& lr : left.rows) {
         for (auto& rr : right.rows) {
@@ -351,8 +446,8 @@ static ExecResult exec_hash_join(const LogicalNodePtr& node, Catalog& catalog, E
         auto& lhs = node->join_cond->left;
         auto& rhs = node->join_cond->right;
         if (lhs->type == ExprType::COLUMN_REF && rhs->type == ExprType::COLUMN_REF) {
-            EvalCtx lctx; lctx.col_names = left.columns;
-            EvalCtx rctx; rctx.col_names = right.columns;
+            EvalCtx lctx; lctx.catalog = &catalog; lctx.col_names = left.columns;
+            EvalCtx rctx; rctx.catalog = &catalog; rctx.col_names = right.columns;
 
             left_key = lhs->table_name.empty() ?
                 lctx.find_col(lhs->column_name) :
@@ -410,7 +505,10 @@ static ExecResult exec_join(const LogicalNodePtr& node, Catalog& catalog, ExecSt
 static ExecResult exec_aggregation(const LogicalNodePtr& node, Catalog& catalog, ExecStats& stats) {
     auto child = exec_node(node->left, catalog, stats);
     EvalCtx ctx;
+    ctx.catalog = &catalog;
     ctx.col_names = child.columns;
+    ctx.outer = stats.outer_ctx;
+    ctx.stats = &stats;
 
     ExecResult res;
     res.columns = node->agg_output_names;
@@ -524,7 +622,10 @@ static ExecResult exec_aggregation(const LogicalNodePtr& node, Catalog& catalog,
 static ExecResult exec_sort(const LogicalNodePtr& node, Catalog& catalog, ExecStats& stats) {
     auto child = exec_node(node->left, catalog, stats);
     EvalCtx ctx;
+    ctx.catalog = &catalog;
     ctx.col_names = child.columns;
+    ctx.outer = stats.outer_ctx;
+    ctx.stats = &stats;
 
     std::sort(child.rows.begin(), child.rows.end(),
         [&](const Row& a, const Row& b) {
@@ -599,8 +700,9 @@ static ExecResult exec_node(const LogicalNodePtr& node, Catalog& catalog, ExecSt
 }
 
 // ───── Public entry ─────
-ExecResult execute(PhysicalNodePtr plan, Catalog& catalog) {
+ExecResult execute(PhysicalNodePtr plan, Catalog& catalog, const EvalCtx* outer_ctx) {
     ExecStats stats;
+    stats.outer_ctx = outer_ctx;
     auto start = std::chrono::high_resolution_clock::now();
     ExecResult res = exec_node(plan, catalog, stats);
     auto end = std::chrono::high_resolution_clock::now();

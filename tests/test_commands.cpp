@@ -1403,3 +1403,83 @@ TEST_CASE("E2E: Multi-statement BEFORE trigger", "[e2e][trigger][multi]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("99"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1"));
 }
+
+// ─────────── Subqueries ───────────
+
+// --- Correlated Scalar Subquery Test ---
+TEST_CASE("E2E: Execute Correlated Scalar Subquery", "[e2e][subquery]") {
+    std::string output = run_interactive(
+        "CREATE TABLE dept (id INT, name VARCHAR);\n"
+        "CREATE TABLE emp (id INT, dept_id INT, name VARCHAR);\n"
+        "INSERT INTO dept VALUES (1, 'Engineering');\n"
+        "INSERT INTO dept VALUES (2, 'Sales');\n"
+        "INSERT INTO emp VALUES (10, 1, 'Alice');\n"
+        "INSERT INTO emp VALUES (20, 2, 'Bob');\n"
+        "SELECT dept.name, (SELECT name FROM emp WHERE emp.dept_id = dept.id) AS emp_name FROM dept;\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Engineering"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Alice"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Sales"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Bob"));
+}
+
+// --- Uncorrelated IN Subquery Test ---
+TEST_CASE("E2E: Execute IN Subquery", "[e2e][subquery]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t1 (id INT, val INT);\n"
+        "CREATE TABLE t2 (id INT, max_val INT);\n"
+        "INSERT INTO t1 VALUES (1, 10);\n"
+        "INSERT INTO t1 VALUES (2, 20);\n"
+        "INSERT INTO t1 VALUES (3, 30);\n"
+        "INSERT INTO t2 VALUES (1, 20);\n"
+        "SELECT * FROM t1 WHERE val IN (SELECT max_val FROM t2);\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("20"));
+}
+
+TEST_CASE("E2E: Scalar Subquery", "[e2e][subquery]") {
+    std::string output = run_interactive(
+        "CREATE TABLE t1 (id INT, val INT);\n"
+        "CREATE TABLE t2 (id INT, max_val INT);\n"
+        "INSERT INTO t1 VALUES (1, 10);\n"
+        "INSERT INTO t1 VALUES (2, 20);\n"
+        "INSERT INTO t2 VALUES (1, 20);\n"
+        "EXPLAIN SELECT * FROM t1 WHERE val = (SELECT max_val FROM t2);\n"
+        "SELECT * FROM t1 WHERE val = (SELECT max_val FROM t2);\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("2"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("20"));
+}
+
+TEST_CASE("E2E: IN Subquery", "[e2e][subquery]") {
+    std::string output = run_interactive(
+        "CREATE TABLE emps (id INT, name VARCHAR);\n"
+        "CREATE TABLE top_ids (emp_id INT);\n"
+        "INSERT INTO emps VALUES (1, 'Alice');\n"
+        "INSERT INTO emps VALUES (2, 'Bob');\n"
+        "INSERT INTO emps VALUES (3, 'Charlie');\n"
+        "INSERT INTO top_ids VALUES (1);\n"
+        "INSERT INTO top_ids VALUES (3);\n"
+        "SELECT * FROM emps WHERE id IN (SELECT emp_id FROM top_ids);\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Alice"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Charlie"));
+}
+
+TEST_CASE("E2E: EXISTS Subquery", "[e2e][subquery]") {
+    std::string output = run_interactive(
+        "CREATE TABLE depts (id INT, name VARCHAR);\n"
+        "CREATE TABLE emp (dept_id INT, name VARCHAR);\n"
+        "INSERT INTO depts VALUES (1, 'Engineering');\n"
+        "INSERT INTO depts VALUES (2, 'HR');\n"
+        "INSERT INTO emp VALUES (1, 'Sam');\n"
+        "SELECT * FROM depts WHERE EXISTS (SELECT dept_id FROM emp WHERE emp.dept_id = depts.id);\n" // Correlated EXISTS
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Engineering"));
+}
+

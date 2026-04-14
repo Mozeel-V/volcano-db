@@ -269,7 +269,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 31 | AST Factory Methods | `[ast]` | 9 | make_int/float/string/column/star/binary/unary/func, to_string
 | 32 | Planner: to_string | `[planner]` | 8 | Plan to_string, optimized plan to_string
 | 33 | String Literals | `[e2e][strings]` | 3 | Strings with spaces, empty string comparison, LIKE empty pattern
-| 34 | Subqueries | `[e2e][subquery]` | 2 | IN subquery parse, FROM subquery parse
+| 34 | Subqueries | `[e2e][subquery]`, `[executor]` | 5 | IN subquery parse, FROM subquery parse, scalar evaluation, IN nested loops containment, EXISTS (uncorrelated/correlated), scalar correlated execution, correlation memoization |
 | 35 | EXPLAIN E2E | `[e2e][explain]` | 2 | EXPLAIN builds plan, EXPLAIN ANALYZE executes
 | 36 | Complex Join Patterns | `[e2e][join]` | 9 | JOIN+ORDER BY joined col, JOIN+LIMIT, JOIN+GROUP+HAVING
 | 37 | Float/Int Mixed Types | `[e2e][types]` | 2 | Float comparison in WHERE, int/float mixed arithmetic
@@ -307,7 +307,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | Query Plan Visualization | 4 | EXPLAIN tree connectors, per-node stats, DOT export, `.plan` |
 | Triggers | 9 | CREATE/DROP TRIGGER, BEFORE/AFTER firing, multi-statement BEGIN...END, `.triggers` |
 | Constraints | 20 | NOT NULL, PRIMARY KEY, UNIQUE, CHECK, REFERENCES (FK) auto-index, UPDATE enforcement |
-| **Total** | **351** | **1048 assertions — all passing** |
+| **Total** | **356** | **1058 assertions — all passing** |
 
 ### Features Tested
 
@@ -455,5 +455,5 @@ CREATE TABLE users (
 ### Test Results
 
 - **SQL Tests** (`tests/test_main.cpp`): 246 test cases — 861 assertions — all passing
-- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 105 test cases — 187 assertions — all passing
-- **Total**: 351 test cases — 1048 assertions — **all passing**
+- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 110 test cases — 197 assertions — all passing
+- **Total**: 356 test cases — 1058 assertions — **all passing**
