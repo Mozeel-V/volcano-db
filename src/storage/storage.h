@@ -125,7 +125,7 @@ struct TriggerDef {
     std::string table_name;
     enum When { BEFORE, AFTER } when;
     enum Event { ON_INSERT, ON_UPDATE, ON_DELETE } event;
-    std::string action_sql;
+    std::vector<std::string> action_sqls;
 };
 
 // ───── Catalog ─────

@@ -121,6 +121,7 @@ extern int yylineno;
 "UNIQUE"            { return UNIQUE; }
 "CHECK"             { return CHECK_KW; }
 "REFERENCES"        { return REFERENCES; }
+"BEGIN"             { return BEGIN_KW; }
 
     /* ── Operators ── */
 "<="                { return LEQ; }

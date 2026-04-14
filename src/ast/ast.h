@@ -236,7 +236,7 @@ struct CreateTriggerStmt {
     std::string table_name;
     int when;    // 0 = BEFORE, 1 = AFTER
     int event;   // 0 = INSERT, 1 = UPDATE, 2 = DELETE
-    std::string action_sql;  // SQL statement to execute when trigger fires
+    std::vector<std::string> action_sqls;  // SQL statements to execute when trigger fires
 };
 
 // ───── Top-level statement ─────

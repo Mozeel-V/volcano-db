@@ -26,6 +26,12 @@ static RawTRefList make_tlist() { RawTRefList l = {nullptr,0,0}; return l; }
 static RawOrderList make_olist(){ RawOrderList l = {0,0,nullptr,nullptr}; return l; }
 static RawColDefList make_cdlist(){ RawColDefList l = {0,0,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr}; return l; }
 
+static RawStrList make_slist() { RawStrList l = {nullptr,0,0}; return l; }
+static void slist_push(RawStrList& l, char* s) {
+    if (l.count >= l.cap) { l.cap = l.cap ? l.cap*2 : 4; l.items = (char**)realloc(l.items, l.cap*sizeof(char*)); }
+    l.items[l.count++] = s;
+}
+
 static void elist_push(RawExprList& l, Expr* e) {
     if (l.count >= l.cap) { l.cap = l.cap ? l.cap*2 : 4; l.items = (Expr**)realloc(l.items, l.cap*sizeof(Expr*)); }
     l.items[l.count++] = e;
@@ -99,6 +105,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
     RawRowList       rowlist;
     RawAssignList    assignlist;
     RawConstraints   constraints;
+    RawStrList       slist;
     int              ival;
 }
 
@@ -115,6 +122,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %token FORMAT DOT
 %token TRIGGER BEFORE AFTER FOR EACH ROW_KW EXECUTE
 %token DEFAULT PRIMARY KEY UNIQUE CHECK_KW REFERENCES
+%token BEGIN_KW
 %token COUNT SUM AVG MIN MAX
 %token TYPE_INT TYPE_FLOAT TYPE_VARCHAR
 %token CASE WHEN THEN ELSE END
@@ -138,6 +146,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %type <str_val>   opt_alias data_type agg_name
 %type <ival>      opt_distinct opt_asc_desc join_kind before_after trigger_event
 %type <constraints> col_constraints
+%type <slist>     trigger_body trigger_stmts
 %type <int_val>   opt_limit opt_offset
 %type <rowlist>   insert_rows
 %type <assignlist> set_list
@@ -344,14 +353,17 @@ statement:
           auto st = new Statement(); st->type = StmtType::ST_DROP_TRIGGER;
           st->drop_name = take_str($3); $$ = st;
       }
-    | CREATE TRIGGER IDENTIFIER before_after trigger_event ON IDENTIFIER FOR EACH ROW_KW EXECUTE STRING_LITERAL {
+    | CREATE TRIGGER IDENTIFIER before_after trigger_event ON IDENTIFIER FOR EACH ROW_KW EXECUTE trigger_body {
           auto st = new Statement(); st->type = StmtType::ST_CREATE_TRIGGER;
           auto tg = std::make_shared<CreateTriggerStmt>();
           tg->trigger_name = take_str($3);
           tg->when = $4;
           tg->event = $5;
           tg->table_name = take_str($7);
-          tg->action_sql = take_str($12);
+          for (int i = 0; i < $12.count; i++) {
+              tg->action_sqls.push_back(take_str($12.items[i]));
+          }
+          free($12.items);
           st->create_trigger = tg; $$ = st;
       }
     | TRUNCATE_KW TABLE IDENTIFIER {
@@ -750,6 +762,24 @@ trigger_event:
       INSERT    { $$ = 0; }
     | UPDATE    { $$ = 1; }
     | DELETE_KW { $$ = 2; }
+    ;
+
+trigger_body:
+      STRING_LITERAL {
+          $$ = make_slist(); slist_push($$, $1);
+      }
+    | BEGIN_KW trigger_stmts END {
+          $$ = $2;
+      }
+    ;
+
+trigger_stmts:
+      STRING_LITERAL ';' {
+          $$ = make_slist(); slist_push($$, $1);
+      }
+    | trigger_stmts STRING_LITERAL ';' {
+          $$ = $1; slist_push($$, $2);
+      }
     ;
 
 %%

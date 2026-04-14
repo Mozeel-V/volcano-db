@@ -368,7 +368,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
 
                 // Fire BEFORE INSERT triggers
                 for (auto* td : catalog.get_triggers(ins.table_name, storage::TriggerDef::ON_INSERT)) {
-                    if (td->when == storage::TriggerDef::BEFORE) execute_sql(td->action_sql, catalog);
+                    if (td->when == storage::TriggerDef::BEFORE) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
                 }
 
                 size_t inserted = 0;
@@ -435,7 +435,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
 
                 // Fire AFTER INSERT triggers
                 for (auto* td : catalog.get_triggers(ins.table_name, storage::TriggerDef::ON_INSERT)) {
-                    if (td->when == storage::TriggerDef::AFTER) execute_sql(td->action_sql, catalog);
+                    if (td->when == storage::TriggerDef::AFTER) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
                 }
 
                 std::cout << inserted << " row(s) inserted into '" << ins.table_name << "'.\n";
@@ -448,7 +448,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
 
                 // Fire BEFORE UPDATE triggers
                 for (auto* td : catalog.get_triggers(upd.table_name, storage::TriggerDef::ON_UPDATE)) {
-                    if (td->when == storage::TriggerDef::BEFORE) execute_sql(td->action_sql, catalog);
+                    if (td->when == storage::TriggerDef::BEFORE) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
                 }
 
                 // Resolve column indices for assignments
@@ -531,7 +531,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
 
                 // Fire AFTER UPDATE triggers
                 for (auto* td : catalog.get_triggers(upd.table_name, storage::TriggerDef::ON_UPDATE)) {
-                    if (td->when == storage::TriggerDef::AFTER) execute_sql(td->action_sql, catalog);
+                    if (td->when == storage::TriggerDef::AFTER) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
                 }
 
                 std::cout << updated << " row(s) updated in '" << upd.table_name << "'.\n";
@@ -544,7 +544,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
 
                 // Fire BEFORE DELETE triggers
                 for (auto* td : catalog.get_triggers(del.table_name, storage::TriggerDef::ON_DELETE)) {
-                    if (td->when == storage::TriggerDef::BEFORE) execute_sql(td->action_sql, catalog);
+                    if (td->when == storage::TriggerDef::BEFORE) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
                 }
 
                 size_t before = tbl->rows.size();
@@ -599,7 +599,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
 
                 // Fire AFTER DELETE triggers
                 for (auto* td : catalog.get_triggers(del.table_name, storage::TriggerDef::ON_DELETE)) {
-                    if (td->when == storage::TriggerDef::AFTER) execute_sql(td->action_sql, catalog);
+                    if (td->when == storage::TriggerDef::AFTER) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
                 }
 
                 std::cout << deleted << " row(s) deleted from '" << del.table_name << "'.\n";
@@ -996,7 +996,7 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 td->table_name = tg.table_name;
                 td->when = static_cast<storage::TriggerDef::When>(tg.when);
                 td->event = static_cast<storage::TriggerDef::Event>(tg.event);
-                td->action_sql = tg.action_sql;
+                td->action_sqls = tg.action_sqls;
                 catalog.add_trigger(td);
                 std::cout << "Trigger '" << tg.trigger_name << "' created on '" << tg.table_name << "'.\n";
                 break;
@@ -1092,9 +1092,14 @@ static bool handle_dot_command(const std::string& line, storage::Catalog& catalo
             std::cout << "Name            | Table           | Timing  | Event   | Action\n";
             std::cout << "----------------+-----------------+---------+---------+---------------------------\n";
             for (auto& t : catalog.triggers) {
+                std::string combined;
+                for (size_t si = 0; si < t->action_sqls.size(); si++) {
+                    if (si > 0) combined += "; ";
+                    combined += t->action_sqls[si];
+                }
                 printf("%-15s | %-15s | %-7s | %-7s | %s\n",
                     t->name.c_str(), t->table_name.c_str(),
-                    timings[t->when], events[t->event], t->action_sql.c_str());
+                    timings[t->when], events[t->event], combined.c_str());
             }
         }
         return true;

@@ -305,9 +305,9 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | DML Operations | 20 | INSERT/UPDATE/DELETE, MERGE (upsert, update-only, insert-only) |
 | DDL Operations | 27 | ALTER TABLE, DROP TABLE/INDEX/VIEW, TRUNCATE |
 | Query Plan Visualization | 4 | EXPLAIN tree connectors, per-node stats, DOT export, `.plan` |
-| Triggers | 6 | CREATE/DROP TRIGGER, BEFORE/AFTER firing, `.triggers` command |
+| Triggers | 9 | CREATE/DROP TRIGGER, BEFORE/AFTER firing, multi-statement BEGIN...END, `.triggers` |
 | Constraints | 20 | NOT NULL, PRIMARY KEY, UNIQUE, CHECK, REFERENCES (FK) auto-index, UPDATE enforcement |
-| **Total** | **348** | **1043 assertions — all passing** |
+| **Total** | **351** | **1048 assertions — all passing** |
 
 ### Features Tested
 
@@ -331,6 +331,25 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 - `MERGE INTO ... USING ... ON ... WHEN MATCHED THEN UPDATE SET ... WHEN NOT MATCHED THEN INSERT VALUES ...` (upsert)
 - `CREATE TRIGGER name BEFORE|AFTER INSERT|UPDATE|DELETE ON table FOR EACH ROW EXECUTE 'action_sql'`
 - `DROP TRIGGER name`
+
+### Triggers
+
+Event-driven actions that run automatically when `INSERT`, `UPDATE`, or `DELETE` occur. Supports `BEFORE` or `AFTER` timing and multi-statement bodies.
+
+```sql
+-- Single statement
+CREATE TRIGGER audit_log AFTER INSERT ON users
+FOR EACH ROW EXECUTE 'INSERT INTO logs VALUES (1)';
+
+-- Multi-statement block
+CREATE TRIGGER update_stats AFTER DELETE ON orders
+FOR EACH ROW EXECUTE BEGIN
+    'UPDATE summary SET count = count - 1';
+    'INSERT INTO log VALUES (2)';
+END;
+
+DROP TRIGGER audit_log;
+```
 
 **Column constraints** (inline with CREATE TABLE):
 - `NOT NULL` — rejects null values on INSERT/UPDATE
@@ -436,5 +455,5 @@ CREATE TABLE users (
 ### Test Results
 
 - **SQL Tests** (`tests/test_main.cpp`): 246 test cases — 861 assertions — all passing
-- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 102 test cases — 182 assertions — all passing
-- **Total**: 348 test cases — 1043 assertions — **all passing**
+- **Command, DML & DDL Tests** (`tests/test_commands.cpp`): 105 test cases — 187 assertions — all passing
+- **Total**: 351 test cases — 1048 assertions — **all passing**

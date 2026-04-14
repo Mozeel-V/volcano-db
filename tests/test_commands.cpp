@@ -1357,3 +1357,49 @@ TEST_CASE("E2E: FK case insensitive", "[e2e][constraint][fk]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 'fkci' created"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted into 'fkci'"));
 }
+
+// ─────────── Multi-Statement Trigger Bodies ───────────
+
+TEST_CASE("E2E: Multi-statement trigger with BEGIN END", "[e2e][trigger][multi]") {
+    std::string output = run_interactive(
+        "CREATE TABLE orders (id INT, total INT);\n"
+        "CREATE TABLE audit_log (msg INT);\n"
+        "CREATE TABLE stats (order_count INT);\n"
+        "INSERT INTO stats VALUES (0);\n"
+        "CREATE TRIGGER on_order AFTER INSERT ON orders FOR EACH ROW EXECUTE BEGIN 'INSERT INTO audit_log VALUES (100)'; 'UPDATE stats SET order_count = order_count + 1'; END;\n"
+        "INSERT INTO orders VALUES (1, 100);\n"
+        "SELECT * FROM audit_log;\n"
+        "SELECT * FROM stats;\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("100"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1"));
+}
+
+TEST_CASE("E2E: Single-statement trigger backward compat", "[e2e][trigger][multi]") {
+    std::string output = run_interactive(
+        "CREATE TABLE items (id INT);\n"
+        "CREATE TABLE log_t (msg INT);\n"
+        "CREATE TRIGGER simple_trig AFTER INSERT ON items FOR EACH ROW EXECUTE 'INSERT INTO log_t VALUES (42)';\n"
+        "INSERT INTO items VALUES (1);\n"
+        "SELECT * FROM log_t;\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("42"));
+}
+
+TEST_CASE("E2E: Multi-statement BEFORE trigger", "[e2e][trigger][multi]") {
+    std::string output = run_interactive(
+        "CREATE TABLE products (id INT, name VARCHAR);\n"
+        "CREATE TABLE pre_log (msg INT);\n"
+        "CREATE TABLE pre_count (n INT);\n"
+        "INSERT INTO pre_count VALUES (0);\n"
+        "CREATE TRIGGER pre_ins BEFORE INSERT ON products FOR EACH ROW EXECUTE BEGIN 'INSERT INTO pre_log VALUES (99)'; 'UPDATE pre_count SET n = n + 1'; END;\n"
+        "INSERT INTO products VALUES (1, 'widget');\n"
+        "SELECT * FROM pre_log;\n"
+        "SELECT * FROM pre_count;\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("99"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1"));
+}

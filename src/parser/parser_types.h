@@ -16,8 +16,8 @@ struct RawColDefList {
     int* is_unique;
     ast::Expr** defaults;
     ast::Expr** checks;
-    char** fk_tables;    // REFERENCES table (nullptr if none)
-    char** fk_columns;   // REFERENCES column (nullptr if none)
+    char** fk_tables;
+    char** fk_columns;
 };
 
 /* INSERT rows: array of RawExprList (each is one row of values) */
@@ -33,8 +33,11 @@ struct RawConstraints {
     int is_unique;
     ast::Expr* default_val;
     ast::Expr* check_expr;
-    char* fk_table;      // REFERENCES table (nullptr if none)
-    char* fk_column;     // REFERENCES column (nullptr if none)
+    char* fk_table;
+    char* fk_column;
 };
+
+/* List of string literals (for multi-statement trigger bodies) */
+struct RawStrList { char** items; int count; int cap; };
 
 #endif // PARSER_TYPES_H
