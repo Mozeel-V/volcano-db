@@ -18,7 +18,7 @@
 #include <functional>
 #include <cmath>
 
-//  parse_sql bridge -- same as in main.cpp
+//  parse_sql bridge same as in main.cpp
 extern int yyparse();
 extern ast::StmtPtr get_parsed_stmt();
 typedef struct yy_buffer_state* YY_BUFFER_STATE;
@@ -35,7 +35,7 @@ StmtPtr parse_sql(const std::string& sql) {
 }
 }
 
-//  We use this to parse SQL, build plan, optimize, execute -- all in one
+//  We use this to parse SQL, build plan, optimize, execute
 
 static executor::ExecResult run_query(storage::Catalog& catalog, const std::string& sql) {
     auto stmt = ast::parse_sql(sql);
@@ -123,7 +123,7 @@ static bool is_null(const storage::Value& v) {
     return std::holds_alternative<std::monostate>(v);
 }
 
-// We test Parser -- Ddl Statements.
+// DDL Statements
 
 TEST_CASE("Parser: CREATE TABLE basic", "[parser][ddl]") {
     auto stmt = ast::parse_sql("CREATE TABLE users (id INT, name VARCHAR, age INT);");
@@ -220,7 +220,7 @@ TEST_CASE("Parser: LOAD statement", "[parser][ddl]") {
     CHECK(stmt->load->file_path == "data.csv");
 }
 
-// We test Parser -- Select Statement Basics.
+// Select Statement Basics
 
 TEST_CASE("Parser: simple SELECT *", "[parser][select]") {
     auto stmt = ast::parse_sql("SELECT * FROM t;");
@@ -266,7 +266,7 @@ TEST_CASE("Parser: SELECT with table alias", "[parser][select]") {
     CHECK(stmt->select->from_clause[0]->alias == "e");
 }
 
-// We test Parser -- Expressions.
+// Expressions
 
 TEST_CASE("Parser: integer literal", "[parser][expr]") {
     auto stmt = ast::parse_sql("SELECT 42 FROM t;");
@@ -391,10 +391,55 @@ TEST_CASE("Parser: IN subquery expression", "[parser][expr]") {
     CHECK(stmt->select->where_clause->subquery != nullptr);
 }
 
+TEST_CASE("Parser: NOT IN subquery expression", "[parser][expr]") {
+    auto stmt = ast::parse_sql("SELECT * FROM t WHERE id NOT IN (SELECT id FROM t);");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->select->where_clause->type == ast::ExprType::UNARY_OP);
+    CHECK(stmt->select->where_clause->unary_op == ast::UnaryOp::OP_NOT);
+    REQUIRE(stmt->select->where_clause->operand != nullptr);
+    CHECK(stmt->select->where_clause->operand->type == ast::ExprType::IN_EXPR);
+    CHECK(stmt->select->where_clause->operand->subquery != nullptr);
+}
+
+TEST_CASE("Parser: SOME quantified expression", "[parser][expr]") {
+    auto stmt = ast::parse_sql("SELECT * FROM t WHERE id = SOME (SELECT id FROM t);");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->select->where_clause->type == ast::ExprType::QUANTIFIED_EXPR);
+    CHECK(stmt->select->where_clause->quant_cmp_op == ast::BinOp::OP_EQ);
+    CHECK(stmt->select->where_clause->quantifier == ast::Quantifier::Q_SOME);
+    CHECK(stmt->select->where_clause->subquery != nullptr);
+}
+
+TEST_CASE("Parser: ALL quantified expression", "[parser][expr]") {
+    auto stmt = ast::parse_sql("SELECT * FROM t WHERE id > ALL (SELECT id FROM t);");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->select->where_clause->type == ast::ExprType::QUANTIFIED_EXPR);
+    CHECK(stmt->select->where_clause->quant_cmp_op == ast::BinOp::OP_GT);
+    CHECK(stmt->select->where_clause->quantifier == ast::Quantifier::Q_ALL);
+    CHECK(stmt->select->where_clause->subquery != nullptr);
+}
+
+TEST_CASE("Parser: ANY quantified expression", "[parser][expr]") {
+    auto stmt = ast::parse_sql("SELECT * FROM t WHERE id = ANY (SELECT id FROM t);");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->select->where_clause->type == ast::ExprType::QUANTIFIED_EXPR);
+    CHECK(stmt->select->where_clause->quant_cmp_op == ast::BinOp::OP_EQ);
+    CHECK(stmt->select->where_clause->quantifier == ast::Quantifier::Q_SOME);
+}
+
 TEST_CASE("Parser: EXISTS expression", "[parser][expr]") {
     auto stmt = ast::parse_sql("SELECT * FROM t WHERE EXISTS (SELECT 1 FROM t);");
     REQUIRE(stmt != nullptr);
     CHECK(stmt->select->where_clause->type == ast::ExprType::EXISTS_EXPR);
+}
+
+TEST_CASE("Parser: NOT EXISTS expression", "[parser][expr]") {
+    auto stmt = ast::parse_sql("SELECT * FROM t WHERE NOT EXISTS (SELECT 1 FROM t);");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->select->where_clause->type == ast::ExprType::UNARY_OP);
+    CHECK(stmt->select->where_clause->unary_op == ast::UnaryOp::OP_NOT);
+    REQUIRE(stmt->select->where_clause->operand != nullptr);
+    CHECK(stmt->select->where_clause->operand->type == ast::ExprType::EXISTS_EXPR);
 }
 
 TEST_CASE("Parser: unary negation", "[parser][expr]") {
@@ -1115,6 +1160,93 @@ TEST_CASE("E2E: WHERE with IN list", "[e2e][where]") {
     create_test_table(catalog);
     auto res = run_query(catalog, "SELECT * FROM t WHERE id IN (1, 3, 5);");
     CHECK(res.rows.size() == 3);
+}
+
+TEST_CASE("E2E: WHERE with NOT IN subquery", "[e2e][where]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+
+    auto ids = std::make_shared<storage::Table>(
+        "ids", std::vector<storage::ColumnSchema>{{"id", storage::DataType::INT}}
+    );
+    ids->insert_row({(int64_t)1});
+    ids->insert_row({(int64_t)3});
+    catalog.add_table(ids);
+
+    auto res = run_query(catalog, "SELECT * FROM t WHERE id NOT IN (SELECT id FROM ids) ORDER BY id;");
+    REQUIRE(res.rows.size() == 3);
+    CHECK(as_int(res.rows[0][0]) == 2);
+    CHECK(as_int(res.rows[1][0]) == 4);
+    CHECK(as_int(res.rows[2][0]) == 5);
+}
+
+TEST_CASE("E2E: WHERE with NOT EXISTS correlated subquery", "[e2e][where]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+
+    auto ids = std::make_shared<storage::Table>(
+        "ids", std::vector<storage::ColumnSchema>{{"id", storage::DataType::INT}}
+    );
+    ids->insert_row({(int64_t)1});
+    ids->insert_row({(int64_t)3});
+    catalog.add_table(ids);
+
+    auto res = run_query(catalog, "SELECT * FROM t WHERE NOT EXISTS (SELECT 1 FROM ids WHERE ids.id = t.id) ORDER BY id;");
+    REQUIRE(res.rows.size() == 3);
+    CHECK(as_int(res.rows[0][0]) == 2);
+    CHECK(as_int(res.rows[1][0]) == 4);
+    CHECK(as_int(res.rows[2][0]) == 5);
+}
+
+TEST_CASE("E2E: WHERE with SOME quantified subquery", "[e2e][where]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+
+    auto ids = std::make_shared<storage::Table>(
+        "ids", std::vector<storage::ColumnSchema>{{"id", storage::DataType::INT}}
+    );
+    ids->insert_row({(int64_t)1});
+    ids->insert_row({(int64_t)3});
+    catalog.add_table(ids);
+
+    auto res = run_query(catalog, "SELECT * FROM t WHERE id = SOME (SELECT id FROM ids) ORDER BY id;");
+    REQUIRE(res.rows.size() == 2);
+    CHECK(as_int(res.rows[0][0]) == 1);
+    CHECK(as_int(res.rows[1][0]) == 3);
+}
+
+TEST_CASE("E2E: WHERE with ALL quantified subquery", "[e2e][where]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+
+    auto ids = std::make_shared<storage::Table>(
+        "ids", std::vector<storage::ColumnSchema>{{"id", storage::DataType::INT}}
+    );
+    ids->insert_row({(int64_t)1});
+    ids->insert_row({(int64_t)3});
+    catalog.add_table(ids);
+
+    auto res = run_query(catalog, "SELECT * FROM t WHERE id > ALL (SELECT id FROM ids) ORDER BY id;");
+    REQUIRE(res.rows.size() == 2);
+    CHECK(as_int(res.rows[0][0]) == 4);
+    CHECK(as_int(res.rows[1][0]) == 5);
+}
+
+TEST_CASE("E2E: WHERE with ANY quantified subquery", "[e2e][where]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+
+    auto ids = std::make_shared<storage::Table>(
+        "ids", std::vector<storage::ColumnSchema>{{"id", storage::DataType::INT}}
+    );
+    ids->insert_row({(int64_t)1});
+    ids->insert_row({(int64_t)3});
+    catalog.add_table(ids);
+
+    auto res = run_query(catalog, "SELECT * FROM t WHERE id = ANY (SELECT id FROM ids) ORDER BY id;");
+    REQUIRE(res.rows.size() == 2);
+    CHECK(as_int(res.rows[0][0]) == 1);
+    CHECK(as_int(res.rows[1][0]) == 3);
 }
 
 TEST_CASE("E2E: WHERE with LIKE prefix%", "[e2e][where]") {

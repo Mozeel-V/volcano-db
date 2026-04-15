@@ -45,6 +45,18 @@ struct EvalCtx {
     }
 };
 
+static bool compare_with_op(const Value& lv, const Value& rv, BinOp op) {
+    switch (op) {
+        case BinOp::OP_EQ:  return value_equal(lv, rv);
+        case BinOp::OP_NEQ: return !value_equal(lv, rv);
+        case BinOp::OP_LT:  return value_less(lv, rv);
+        case BinOp::OP_GT:  return value_less(rv, lv);
+        case BinOp::OP_LTE: return value_less(lv, rv) || value_equal(lv, rv);
+        case BinOp::OP_GTE: return value_less(rv, lv) || value_equal(lv, rv);
+        default:            return false;
+    }
+}
+
 static Value eval_expr(const ExprPtr& expr, const EvalCtx& ctx) {
     if (!expr) return std::monostate{};
     switch (expr->type) {
@@ -186,6 +198,37 @@ static Value eval_expr(const ExprPtr& expr, const EvalCtx& ctx) {
                 ctx.stats->subquery_cache[expr.get()] = val;
             }
             return val;
+        }
+        case ExprType::QUANTIFIED_EXPR: {
+            if (!ctx.catalog || !expr->subquery) return (int64_t)0;
+
+            Value lv = eval_expr(expr->left, ctx);
+            ctx.accessed_outer = false;
+
+            auto plan = planner::build_logical_plan(*expr->subquery, *ctx.catalog);
+            if (ctx.stats) ctx.stats->subqueries_executed++;
+            auto res = execute(plan, *ctx.catalog, &ctx);
+
+            if (expr->quantifier == Quantifier::Q_ALL) {
+                // SQL: comparison with ALL over empty set is true.
+                if (res.rows.empty()) return (int64_t)1;
+                for (const auto& row : res.rows) {
+                    if (row.empty()) continue;
+                    if (!compare_with_op(lv, row[0], expr->quant_cmp_op)) {
+                        return (int64_t)0;
+                    }
+                }
+                return (int64_t)1;
+            }
+
+            // SOME/ANY: true if any comparison is true, false for empty set.
+            for (const auto& row : res.rows) {
+                if (row.empty()) continue;
+                if (compare_with_op(lv, row[0], expr->quant_cmp_op)) {
+                    return (int64_t)1;
+                }
+            }
+            return (int64_t)0;
         }
         case ExprType::IN_EXPR: {
             Value lv = eval_expr(expr->left, ctx);

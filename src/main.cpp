@@ -103,7 +103,7 @@ static planner::LogicalNodePtr last_explain_plan;
 static void print_help() {
     std::cout << R"(
 Simple Query Processor -- Commands:
-    SQL queries:      SELECT, CREATE TABLE, CREATE INDEX, CREATE VIEW, CREATE MATERIALIZED VIEW, INSERT, LOAD
+  SQL queries:      SELECT, CREATE TABLE, CREATE INDEX, CREATE VIEW, CREATE MATERIALIZED VIEW, INSERT, LOAD
   EXPLAIN <query>   Show query plan (tree format)
   EXPLAIN ANALYZE <query>   Show plan + execution stats (per-node)
   EXPLAIN FORMAT DOT <query>  Show plan in Graphviz DOT format
@@ -1184,10 +1184,10 @@ static bool run_script_file(const std::string& path, storage::Catalog& catalog) 
 int main(int argc, char* argv[]) {
     storage::Catalog catalog;
 
-    std::cout << "?==================================================?\n";
-    std::cout << "?     Simple Query Processor & Optimizer (SQP)     ?\n";
-    std::cout << "?       Type .help for available commands          ?\n";
-    std::cout << "?==================================================?\n\n";
+    std::cout << "|==================================================|\n";
+    std::cout << "|     Simple Query Processor & Optimizer (SQP)     |\n";
+    std::cout << "|       Type .help for available commands          |\n";
+    std::cout << "|==================================================|\n\n";
 
     // If argument provided, run it as a script
     if (argc > 1) {

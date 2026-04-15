@@ -29,9 +29,15 @@ enum class ExprType {
     SUBQUERY,
     IN_EXPR,
     EXISTS_EXPR,
+    QUANTIFIED_EXPR,
     BETWEEN_EXPR,
     CASE_EXPR,
     CAST_EXPR,
+};
+
+enum class Quantifier {
+    Q_SOME,
+    Q_ALL,
 };
 
 enum class BinOp {
@@ -69,6 +75,9 @@ struct Expr {
     std::shared_ptr<SelectStmt> subquery;
     // IN list
     std::vector<ExprPtr> in_list;
+    // Quantified comparison (e.g., x > ALL (subquery))
+    BinOp quant_cmp_op = BinOp::OP_EQ;
+    Quantifier quantifier = Quantifier::Q_SOME;
     // BETWEEN
     ExprPtr between_low;
     ExprPtr between_high;

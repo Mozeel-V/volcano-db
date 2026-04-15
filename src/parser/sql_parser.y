@@ -88,6 +88,16 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
     auto e = new Expr(); e->type = ExprType::BINARY_OP; e->bin_op = op;
     e->left = wrap(l); e->right = wrap(r); return e;
 }
+
+static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
+  auto e = new Expr();
+  e->type = ExprType::QUANTIFIED_EXPR;
+  e->quant_cmp_op = op;
+  e->quantifier = quant ? Quantifier::Q_ALL : Quantifier::Q_SOME;
+  e->left = wrap(l);
+  e->subquery.reset(sub);
+  return e;
+}
 %}
 
 %union {
@@ -144,7 +154,7 @@ static Expr* make_binop(BinOp op, Expr* l, Expr* r) {
 %type <olist>     opt_order_by order_list
 %type <cdlist>    column_def_list
 %type <str_val>   opt_alias data_type agg_name
-%type <ival>      opt_distinct opt_asc_desc join_kind before_after trigger_event
+%type <ival>      opt_distinct opt_asc_desc join_kind before_after trigger_event quantifier_kw
 %type <constraints> col_constraints
 %type <slist>     trigger_body trigger_stmts
 %type <int_val>   opt_limit opt_offset
@@ -620,6 +630,12 @@ expr_cmp:
     | expr_add '>' expr_add         { $$ = make_binop(BinOp::OP_GT, $1, $3); }
     | expr_add LEQ expr_add         { $$ = make_binop(BinOp::OP_LTE, $1, $3); }
     | expr_add GEQ expr_add         { $$ = make_binop(BinOp::OP_GTE, $1, $3); }
+    | expr_add '=' quantifier_kw '(' select_body ')'   { $$ = make_quantified(BinOp::OP_EQ,  $3, $1, $5); }
+    | expr_add NEQ quantifier_kw '(' select_body ')'   { $$ = make_quantified(BinOp::OP_NEQ, $3, $1, $5); }
+    | expr_add '<' quantifier_kw '(' select_body ')'   { $$ = make_quantified(BinOp::OP_LT,  $3, $1, $5); }
+    | expr_add '>' quantifier_kw '(' select_body ')'   { $$ = make_quantified(BinOp::OP_GT,  $3, $1, $5); }
+    | expr_add LEQ quantifier_kw '(' select_body ')'   { $$ = make_quantified(BinOp::OP_LTE, $3, $1, $5); }
+    | expr_add GEQ quantifier_kw '(' select_body ')'   { $$ = make_quantified(BinOp::OP_GTE, $3, $1, $5); }
     | expr_add LIKE expr_add        { $$ = make_binop(BinOp::OP_LIKE, $1, $3); }
     | expr_add IS NULL_KW {
           auto e = new Expr(); e->type = ExprType::UNARY_OP;
@@ -644,6 +660,12 @@ expr_cmp:
           in_e->left = wrap($1);
           for (int i = 0; i < $5.count; i++) in_e->in_list.push_back(wrap($5.items[i]));
           free($5.items);
+          auto e = new Expr(); e->type = ExprType::UNARY_OP; e->unary_op = UnaryOp::OP_NOT;
+          e->operand = wrap(in_e); $$ = e;
+      }
+    | expr_add NOT IN '(' select_body ')' {
+          auto in_e = new Expr(); in_e->type = ExprType::IN_EXPR;
+          in_e->left = wrap($1); in_e->subquery.reset($5);
           auto e = new Expr(); e->type = ExprType::UNARY_OP; e->unary_op = UnaryOp::OP_NOT;
           e->operand = wrap(in_e); $$ = e;
       }
@@ -740,6 +762,12 @@ agg_name:
     | AVG   { $$ = strdup("AVG"); }
     | MIN   { $$ = strdup("MIN"); }
     | MAX   { $$ = strdup("MAX"); }
+    ;
+
+quantifier_kw:
+      SOME  { $$ = 0; }
+    | ANY   { $$ = 0; }
+    | ALL   { $$ = 1; }
     ;
 
 before_after:

@@ -154,9 +154,9 @@ src/
 
 ### Key components
 
-**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, `DROP TABLE/INDEX/VIEW`, `TRUNCATE`, `LOAD`, `EXPLAIN`, and `BENCHMARK`.
+**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), predicate operators including `IN`, `NOT IN`, `EXISTS`, `NOT EXISTS`, and quantified subquery predicates (`SOME`/`ANY`, `ALL`), plus `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, `DROP TABLE/INDEX/VIEW`, `TRUNCATE`, `LOAD`, `EXPLAIN`, and `BENCHMARK`.
 
-**AST** (`ast::Expr`, `ast::SelectStmt`, `ast::Statement`) — Tree representation of parsed SQL. Expressions cover column refs, literals, binary/unary ops, function calls (aggregates), subqueries, `IN`, `BETWEEN`, `LIKE`, `CASE`.
+**AST** (`ast::Expr`, `ast::SelectStmt`, `ast::Statement`) — Tree representation of parsed SQL. Expressions cover column refs, literals, binary/unary ops, function calls (aggregates), subqueries, `IN`/`NOT IN`, `EXISTS`/`NOT EXISTS`, quantified predicates (`SOME`/`ANY`, `ALL`), `BETWEEN`, `LIKE`, `CASE`.
 
 **Storage** (`storage::Table`, `storage::Catalog`, `storage::HashIndex`) — In-memory row store. `Value` is a `std::variant<std::monostate, int64_t, double, std::string>`. The catalog manages tables and provides statistics (row counts, distinct values) for the cost optimizer.
 
@@ -174,7 +174,7 @@ src/
 -- Queries
 SELECT [DISTINCT] <columns> FROM <tables>
   [JOIN <table> ON <condition>]
-  [WHERE <condition>]
+    [WHERE <condition>]   -- includes IN/NOT IN, EXISTS/NOT EXISTS, SOME/ANY/ALL subquery predicates
   [GROUP BY <columns>]
   [HAVING <condition>]
   [ORDER BY <columns> [ASC|DESC]]
@@ -198,7 +198,7 @@ DROP INDEX <index_name>;
 DROP VIEW <view_name>;
 TRUNCATE TABLE <table_name>;
 TRUNCATE <table_name>;                  -- shorthand (without TABLE keyword)
-LOAD <table> FROM '<file.csv>';
+LOAD <table> '<file.csv>';
 
 -- Analysis
 EXPLAIN <query>;
@@ -229,7 +229,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 |---|---------|--------|-------|-------------|
 | 1 | Parser: DDL Statements | `[parser][ddl]` | 11 | CREATE TABLE (INT, FLOAT, VARCHAR, VARCHAR(n), INTEGER, DOUBLE, TEXT), CREATE INDEX (basic, USING HASH), INSERT, LOAD
 | 2 | Parser: SELECT Basics | `[parser][select]` | 6 | SELECT *, specific columns, alias (AS / implicit), DISTINCT, table alias
-| 3 | Parser: Expressions | `[parser][expr]` | 19 | Literals (int, float, string, NULL), arithmetic ops (+,-,*,/,%), comparisons (=,!=,<>,<,>,<=,>=), logical (AND, OR, NOT), IS NULL / IS NOT NULL, LIKE, BETWEEN, IN (list & subquery), EXISTS, negation, parenthesized, qualified columns
+| 3 | Parser: Expressions | `[parser][expr]` | 24 | Literals (int, float, string, NULL), arithmetic ops (+,-,*,/,%), comparisons (=,!=,<>,<,>,<=,>=), logical (AND, OR, NOT), IS NULL / IS NOT NULL, LIKE, BETWEEN, IN (list & subquery), NOT IN (subquery), EXISTS/NOT EXISTS, SOME/ANY/ALL quantified predicates, negation, parenthesized, qualified columns
 | 4 | Parser: Aggregate Functions | `[parser][aggregate]` | 4 | COUNT(*), COUNT(column), COUNT(DISTINCT col), SUM/AVG/MIN/MAX
 | 5 | Parser: Clauses | `[parser][clause]` | 8 | WHERE, GROUP BY, HAVING, ORDER BY (ASC default, DESC, multiple keys), LIMIT, LIMIT+OFFSET
 | 6 | Parser: JOIN Syntax | `[parser][join]` | 8 | INNER (implicit/explicit), LEFT, LEFT OUTER, RIGHT, FULL OUTER, CROSS, subquery in FROM
@@ -241,7 +241,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 12 | Storage: Catalog | `[storage][catalog]` | 3 | add/get table, cardinality/distinct stats
 | 13 | Storage: Hash Index | `[storage][index]` | 3 | Build+lookup int, build+lookup string, catalog create_index
 | 14 | E2E: SELECT * | `[e2e][select]` | 3 | SELECT *, specific columns, expression in select list
-| 15 | E2E: WHERE Clause | `[e2e][where]` | 15 | Equality, string comparison, inequality (>), <=, AND, OR, NOT, !=, <>, BETWEEN, IN list, LIKE prefix%, LIKE %suffix, LIKE %substring%, LIKE exact
+| 15 | E2E: WHERE Clause | `[e2e][where]` | 20 | Equality, string comparison, inequality (>), <=, AND, OR, NOT, !=, <>, BETWEEN, IN list, NOT IN subquery, EXISTS/NOT EXISTS correlated predicates, SOME/ANY/ALL quantified subqueries, LIKE prefix%, LIKE %suffix, LIKE %substring%, LIKE exact
 | 16 | E2E: ORDER BY | `[e2e][orderby]` | 4 | ASC default, DESC, string column, multiple keys
 | 17 | E2E: LIMIT/OFFSET | `[e2e][limit]` | 5 | Basic LIMIT, LIMIT+OFFSET, LIMIT > row count, OFFSET beyond rows, LIMIT 0
 | 18 | E2E: DISTINCT | `[e2e][distinct]` | 2 | DISTINCT on duplicates, DISTINCT on unique column
@@ -260,7 +260,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 31 | AST Factory Methods | `[ast]` | 9 | make_int/float/string/column/star/binary/unary/func, to_string
 | 32 | Planner: to_string | `[planner]` | 8 | Plan to_string, optimized plan to_string
 | 33 | String Literals | `[e2e][strings]` | 3 | Strings with spaces, empty string comparison, LIKE empty pattern
-| 34 | Subqueries | `[e2e][subquery]`, `[executor]` | 5 | IN subquery parse, FROM subquery parse, scalar evaluation, IN correlated nested loops, EXISTS (uncorrelated/correlated), scalar correlated execution, correlation memoization, IN uncorrelated Hash Join |
+| 34 | Subqueries | `[e2e][subquery]`, `[executor]` | 5 | IN subquery parse, FROM subquery parse, scalar evaluation, IN correlated nested loops, EXISTS/NOT EXISTS (uncorrelated/correlated), scalar correlated execution, correlation memoization, IN uncorrelated Hash Join |
 | 35 | EXPLAIN E2E | `[e2e][explain]` | 2 | EXPLAIN builds plan, EXPLAIN ANALYZE executes
 | 36 | Complex Join Patterns | `[e2e][join]` | 9 | JOIN+ORDER BY joined col, JOIN+LIMIT, JOIN+GROUP+HAVING
 | 37 | Float/Int Mixed Types | `[e2e][types]` | 2 | Float comparison in WHERE, int/float mixed arithmetic
@@ -298,7 +298,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | Query Plan Visualization | 4 | EXPLAIN tree connectors, per-node stats, DOT export, `.plan` |
 | Triggers | 9 | CREATE/DROP TRIGGER, BEFORE/AFTER firing, multi-statement BEGIN...END, `.triggers` |
 | Constraints | 20 | NOT NULL, PRIMARY KEY, UNIQUE, CHECK, REFERENCES (FK) auto-index, UPDATE enforcement |
-| **Total** | **357** | **1060 assertions — all passing** |
+| **Total** | **367** | **1089 assertions — all passing** |
 
 ### Features Tested
 

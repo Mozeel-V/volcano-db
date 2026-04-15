@@ -120,6 +120,10 @@ std::string Expr::to_string() const {
             return left->to_string() + " IN (...)";
         case ExprType::EXISTS_EXPR:
             return "EXISTS(...)";
+        case ExprType::QUANTIFIED_EXPR: {
+            std::string q = (quantifier == Quantifier::Q_ALL) ? "ALL" : "SOME";
+            return left->to_string() + " " + binop_str(quant_cmp_op) + " " + q + " (...)";
+        }
         case ExprType::BETWEEN_EXPR:
             return operand->to_string() + " BETWEEN " + between_low->to_string() + " AND " + between_high->to_string();
         default:
