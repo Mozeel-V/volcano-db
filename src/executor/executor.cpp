@@ -286,6 +286,29 @@ static Value eval_expr(const ExprPtr& expr, const EvalCtx& ctx) {
             bool le_hi = !value_less(hi, v);
             return (int64_t)((ge_lo && le_hi) ? 1 : 0);
         }
+        case ExprType::CASE_EXPR: {
+            size_t n = std::min(expr->case_when_conds.size(), expr->case_then_exprs.size());
+            if (expr->case_base) {
+                Value base = eval_expr(expr->case_base, ctx);
+                for (size_t i = 0; i < n; i++) {
+                    Value when_val = eval_expr(expr->case_when_conds[i], ctx);
+                    if (value_equal(base, when_val)) {
+                        return eval_expr(expr->case_then_exprs[i], ctx);
+                    }
+                }
+            } else {
+                for (size_t i = 0; i < n; i++) {
+                    Value cond = eval_expr(expr->case_when_conds[i], ctx);
+                    if (value_to_int(cond) != 0) {
+                        return eval_expr(expr->case_then_exprs[i], ctx);
+                    }
+                }
+            }
+            if (expr->case_else_expr) {
+                return eval_expr(expr->case_else_expr, ctx);
+            }
+            return std::monostate{};
+        }
         default:
             return std::monostate{};
     }

@@ -32,6 +32,18 @@ static void slist_push(RawStrList& l, char* s) {
     l.items[l.count++] = s;
 }
 
+static RawCaseList make_clist() { RawCaseList l = {nullptr,nullptr,0,0}; return l; }
+static void clist_push(RawCaseList& l, Expr* when_expr, Expr* then_expr) {
+  if (l.count >= l.cap) {
+    l.cap = l.cap ? l.cap * 2 : 4;
+    l.whens = (Expr**)realloc(l.whens, l.cap * sizeof(Expr*));
+    l.thens = (Expr**)realloc(l.thens, l.cap * sizeof(Expr*));
+  }
+  l.whens[l.count] = when_expr;
+  l.thens[l.count] = then_expr;
+  l.count++;
+}
+
 static void elist_push(RawExprList& l, Expr* e) {
     if (l.count >= l.cap) { l.cap = l.cap ? l.cap*2 : 4; l.items = (Expr**)realloc(l.items, l.cap*sizeof(Expr*)); }
     l.items[l.count++] = e;
@@ -118,6 +130,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
     RawAssignList    assignlist;
     RawConstraints   constraints;
     RawStrList       slist;
+    RawCaseList      caselist;
     int              ival;
 }
 
@@ -162,6 +175,8 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %type <int_val>   opt_limit opt_offset
 %type <rowlist>   insert_rows
 %type <assignlist> set_list
+%type <caselist>  case_when_then_list
+%type <expr_raw>  opt_case_else
 
 %nonassoc UMINUS
 
@@ -230,6 +245,12 @@ statement:
           auto ci = std::make_shared<CreateIndexStmt>();
           ci->index_name = take_str($3); ci->table_name = take_str($5); ci->column_name = take_str($7);
           ci->hash_index = true; st->create_index = ci; $$ = st;
+      }
+    | CREATE INDEX IDENTIFIER ON IDENTIFIER '(' IDENTIFIER ')' USING BTREE {
+          auto st = new Statement(); st->type = StmtType::ST_CREATE_INDEX;
+          auto ci = std::make_shared<CreateIndexStmt>();
+          ci->index_name = take_str($3); ci->table_name = take_str($5); ci->column_name = take_str($7);
+          ci->hash_index = false; st->create_index = ci; $$ = st;
       }
     | CREATE VIEW IDENTIFIER AS select_stmt {
           auto st = new Statement(); st->type = StmtType::ST_CREATE_VIEW;
@@ -631,6 +652,22 @@ expr_list:
     | expr_list ',' expr    { $$ = $1; elist_push($$, $3); }
     ;
 
+case_when_then_list:
+      WHEN expr THEN expr {
+          $$ = make_clist();
+          clist_push($$, $2, $4);
+      }
+    | case_when_then_list WHEN expr THEN expr {
+          $$ = $1;
+          clist_push($$, $3, $5);
+      }
+    ;
+
+opt_case_else:
+      /* empty */ { $$ = nullptr; }
+    | ELSE expr   { $$ = $2; }
+    ;
+
 expr: expr_or ;
 
 expr_or:
@@ -777,6 +814,29 @@ expr_primary:
           auto e = new Expr(); e->type = ExprType::FUNC_CALL;
           e->func_name = take_str($1); e->distinct_func = true;
           e->args.push_back(wrap($4)); $$ = e;
+      }
+    | CASE case_when_then_list opt_case_else END {
+        auto e = new Expr(); e->type = ExprType::CASE_EXPR;
+        for (int i = 0; i < $2.count; i++) {
+          e->case_when_conds.push_back(wrap($2.whens[i]));
+          e->case_then_exprs.push_back(wrap($2.thens[i]));
+        }
+        if ($3) e->case_else_expr = wrap($3);
+        free($2.whens);
+        free($2.thens);
+        $$ = e;
+      }
+    | CASE expr case_when_then_list opt_case_else END {
+        auto e = new Expr(); e->type = ExprType::CASE_EXPR;
+        e->case_base = wrap($2);
+        for (int i = 0; i < $3.count; i++) {
+          e->case_when_conds.push_back(wrap($3.whens[i]));
+          e->case_then_exprs.push_back(wrap($3.thens[i]));
+        }
+        if ($4) e->case_else_expr = wrap($4);
+        free($3.whens);
+        free($3.thens);
+        $$ = e;
       }
     | '(' expr ')' { $$ = $2; }
     | '(' select_stmt ')' {

@@ -184,6 +184,13 @@ TEST_CASE("Parser: CREATE INDEX USING HASH", "[parser][ddl]") {
     CHECK(stmt->create_index->hash_index == true);
 }
 
+TEST_CASE("Parser: CREATE INDEX USING BTREE", "[parser][ddl]") {
+    auto stmt = ast::parse_sql("CREATE INDEX idx_name ON users (name) USING BTREE;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_CREATE_INDEX);
+    CHECK(stmt->create_index->hash_index == false);
+}
+
 TEST_CASE("Parser: CREATE VIEW", "[parser][ddl]") {
     auto stmt = ast::parse_sql("CREATE VIEW v_users AS SELECT id, name FROM users;");
     REQUIRE(stmt != nullptr);
@@ -506,6 +513,39 @@ TEST_CASE("Parser: NOT EXISTS expression", "[parser][expr]") {
     CHECK(stmt->select->where_clause->operand->type == ast::ExprType::EXISTS_EXPR);
 }
 
+TEST_CASE("Parser: searched CASE expression", "[parser][expr]") {
+    auto stmt = ast::parse_sql("SELECT CASE WHEN id > 3 THEN 'high' ELSE 'low' END FROM t;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->select->select_list.size() == 1);
+    auto& e = stmt->select->select_list[0];
+    REQUIRE(e->type == ast::ExprType::CASE_EXPR);
+    CHECK(e->case_base == nullptr);
+    CHECK(e->case_when_conds.size() == 1);
+    CHECK(e->case_then_exprs.size() == 1);
+    CHECK(e->case_else_expr != nullptr);
+}
+
+TEST_CASE("Parser: simple CASE expression", "[parser][expr]") {
+    auto stmt = ast::parse_sql("SELECT CASE id WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END FROM t;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->select->select_list.size() == 1);
+    auto& e = stmt->select->select_list[0];
+    REQUIRE(e->type == ast::ExprType::CASE_EXPR);
+    CHECK(e->case_base != nullptr);
+    CHECK(e->case_when_conds.size() == 2);
+    CHECK(e->case_then_exprs.size() == 2);
+    CHECK(e->case_else_expr != nullptr);
+}
+
+TEST_CASE("Parser: CASE expression without ELSE", "[parser][expr]") {
+    auto stmt = ast::parse_sql("SELECT CASE WHEN id = 1 THEN 10 END FROM t;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->select->select_list.size() == 1);
+    auto& e = stmt->select->select_list[0];
+    REQUIRE(e->type == ast::ExprType::CASE_EXPR);
+    CHECK(e->case_else_expr == nullptr);
+}
+
 TEST_CASE("Parser: unary negation", "[parser][expr]") {
     auto stmt = ast::parse_sql("SELECT -1 FROM t;");
     REQUIRE(stmt != nullptr);
@@ -728,6 +768,11 @@ TEST_CASE("Case insensitivity: DDL keywords", "[parser][case]") {
     auto s2 = ast::parse_sql("CREATE INDEX idx ON test (id) USING HASH;");
     REQUIRE(s2 != nullptr);
     CHECK(s2->type == ast::StmtType::ST_CREATE_INDEX);
+
+    auto s3 = ast::parse_sql("create index idx2 on test (id) using btree;");
+    REQUIRE(s3 != nullptr);
+    CHECK(s3->type == ast::StmtType::ST_CREATE_INDEX);
+    CHECK(s3->create_index->hash_index == false);
 }
 
 TEST_CASE("Case insensitivity: aggregate function names", "[parser][case]") {
@@ -1143,6 +1188,17 @@ TEST_CASE("E2E: SELECT with expression in list", "[e2e][select]") {
     CHECK(as_int(res.rows[0][1]) == 11);
 }
 
+TEST_CASE("E2E: CASE expression in SELECT list", "[e2e][select]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    auto res = run_query(catalog,
+        "SELECT id, CASE id WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END FROM t ORDER BY id;");
+    REQUIRE(res.rows.size() == 5);
+    CHECK(as_string(res.rows[0][1]) == "one");
+    CHECK(as_string(res.rows[1][1]) == "two");
+    CHECK(as_string(res.rows[2][1]) == "other");
+}
+
 // End-To-End -- Where Clause
 
 TEST_CASE("E2E: WHERE with equality", "[e2e][where]") {
@@ -1222,6 +1278,16 @@ TEST_CASE("E2E: WHERE with IN list", "[e2e][where]") {
     create_test_table(catalog);
     auto res = run_query(catalog, "SELECT * FROM t WHERE id IN (1, 3, 5);");
     CHECK(res.rows.size() == 3);
+}
+
+TEST_CASE("E2E: WHERE using CASE expression", "[e2e][where]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    auto res = run_query(catalog,
+        "SELECT id FROM t WHERE CASE WHEN dept = 'Sales' THEN 1 ELSE 0 END = 1 ORDER BY id;");
+    REQUIRE(res.rows.size() == 2);
+    CHECK(as_int(res.rows[0][0]) == 2);
+    CHECK(as_int(res.rows[1][0]) == 5);
 }
 
 TEST_CASE("E2E: WHERE with NOT IN subquery", "[e2e][where]") {
@@ -1378,6 +1444,19 @@ TEST_CASE("E2E: ORDER BY multiple keys", "[e2e][orderby]") {
     REQUIRE(res.rows.size() == 5);
     CHECK(as_string(res.rows[0][3]) == "Engineering");
     CHECK(as_string(res.rows[2][3]) == "HR");
+}
+
+TEST_CASE("E2E: ORDER BY using CASE expression", "[e2e][orderby]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    auto res = run_query(catalog,
+        "SELECT id, dept FROM t ORDER BY CASE WHEN dept = 'Engineering' THEN 0 WHEN dept = 'HR' THEN 1 ELSE 2 END, id;");
+    REQUIRE(res.rows.size() == 5);
+    CHECK(as_int(res.rows[0][0]) == 1);
+    CHECK(as_int(res.rows[1][0]) == 3);
+    CHECK(as_int(res.rows[2][0]) == 4);
+    CHECK(as_int(res.rows[3][0]) == 2);
+    CHECK(as_int(res.rows[4][0]) == 5);
 }
 
 // End-To-End -- Limit / Offset

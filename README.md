@@ -154,7 +154,7 @@ src/
 
 ### Key components
 
-**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), predicate operators including `IN`, `NOT IN`, `EXISTS`, `NOT EXISTS`, and quantified subquery predicates (`SOME`/`ANY`, `ALL`), plus `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, `DROP TABLE/INDEX/VIEW`, `TRUNCATE`, `LOAD`, `EXPLAIN`, and `BENCHMARK`.
+**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), predicate operators including `IN`, `NOT IN`, `EXISTS`, `NOT EXISTS`, and quantified subquery predicates (`SOME`/`ANY`, `ALL`), plus expression forms like `CASE WHEN ... THEN ... ELSE ... END`, and `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, `DROP TABLE/INDEX/VIEW`, `TRUNCATE`, `LOAD`, `EXPLAIN`, and `BENCHMARK`.
 
 **AST** (`ast::Expr`, `ast::SelectStmt`, `ast::Statement`) — Tree representation of parsed SQL. Expressions cover column refs, literals, binary/unary ops, function calls (aggregates), subqueries, `IN`/`NOT IN`, `EXISTS`/`NOT EXISTS`, quantified predicates (`SOME`/`ANY`, `ALL`), `BETWEEN`, `LIKE`, `CASE`.
 
@@ -174,7 +174,7 @@ src/
 -- Queries
 SELECT [DISTINCT] <columns> FROM <tables>
   [JOIN <table> ON <condition>]
-    [WHERE <condition>]   -- includes IN/NOT IN, EXISTS/NOT EXISTS, SOME/ANY/ALL subquery predicates
+    [WHERE <condition>]   -- includes IN/NOT IN, EXISTS/NOT EXISTS, SOME/ANY/ALL subquery predicates, CASE expressions
   [GROUP BY <columns>]
   [HAVING <condition>]
   [ORDER BY <columns> [ASC|DESC]]
@@ -227,9 +227,9 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 
 | # | Section | Tag(s) | Count | Description |
 |---|---------|--------|-------|-------------|
-| 1 | Parser: DDL Statements | `[parser][ddl]` | 14 | CREATE TABLE (INT, FLOAT, VARCHAR, VARCHAR(n), INTEGER, DOUBLE, TEXT), CREATE INDEX (basic, USING HASH), INSERT, LOAD, FK ON DELETE CASCADE/RESTRICT parsing
+| 1 | Parser: DDL Statements | `[parser][ddl]` | 15 | CREATE TABLE (INT, FLOAT, VARCHAR, VARCHAR(n), INTEGER, DOUBLE, TEXT), CREATE INDEX (basic, USING HASH, USING BTREE), INSERT, LOAD, FK ON DELETE CASCADE/RESTRICT parsing
 | 2 | Parser: SELECT Basics | `[parser][select]` | 10 | SELECT *, specific columns, alias (AS / implicit), DISTINCT, table alias, UNION, UNION ALL, INTERSECT, EXCEPT
-| 3 | Parser: Expressions | `[parser][expr]` | 24 | Literals (int, float, string, NULL), arithmetic ops (+,-,*,/,%), comparisons (=,!=,<>,<,>,<=,>=), logical (AND, OR, NOT), IS NULL / IS NOT NULL, LIKE, BETWEEN, IN (list & subquery), NOT IN (subquery), EXISTS/NOT EXISTS, SOME/ANY/ALL quantified predicates, negation, parenthesized, qualified columns
+| 3 | Parser: Expressions | `[parser][expr]` | 27 | Literals (int, float, string, NULL), arithmetic ops (+,-,*,/,%), comparisons (=,!=,<>,<,>,<=,>=), logical (AND, OR, NOT), IS NULL / IS NOT NULL, LIKE, BETWEEN, IN (list & subquery), NOT IN (subquery), EXISTS/NOT EXISTS, SOME/ANY/ALL quantified predicates, searched and simple CASE expressions (with and without ELSE), negation, parenthesized, qualified columns
 | 4 | Parser: Aggregate Functions | `[parser][aggregate]` | 4 | COUNT(*), COUNT(column), COUNT(DISTINCT col), SUM/AVG/MIN/MAX
 | 5 | Parser: Clauses | `[parser][clause]` | 8 | WHERE, GROUP BY, HAVING, ORDER BY (ASC default, DESC, multiple keys), LIMIT, LIMIT+OFFSET
 | 6 | Parser: JOIN Syntax | `[parser][join]` | 8 | INNER (implicit/explicit), LEFT, LEFT OUTER, RIGHT, FULL OUTER, CROSS, subquery in FROM
@@ -240,9 +240,9 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 11 | Storage: Table Operations | `[storage][table]` | 4 | Table creation/schema, insert_row, distinct_values, cardinality
 | 12 | Storage: Catalog | `[storage][catalog]` | 3 | add/get table, cardinality/distinct stats
 | 13 | Storage: Hash Index | `[storage][index]` | 3 | Build+lookup int, build+lookup string, catalog create_index
-| 14 | E2E: SELECT * | `[e2e][select]` | 3 | SELECT *, specific columns, expression in select list
-| 15 | E2E: WHERE Clause | `[e2e][where]` | 20 | Equality, string comparison, inequality (>), <=, AND, OR, NOT, !=, <>, BETWEEN, IN list, NOT IN subquery, EXISTS/NOT EXISTS correlated predicates, SOME/ANY/ALL quantified subqueries, LIKE prefix%, LIKE %suffix, LIKE %substring%, LIKE exact
-| 16 | E2E: ORDER BY | `[e2e][orderby]` | 4 | ASC default, DESC, string column, multiple keys
+| 14 | E2E: SELECT * | `[e2e][select]` | 4 | SELECT *, specific columns, expression in select list, CASE expression in projection
+| 15 | E2E: WHERE Clause | `[e2e][where]` | 21 | Equality, string comparison, inequality (>), <=, AND, OR, NOT, !=, <>, BETWEEN, IN list, CASE predicate, NOT IN subquery, EXISTS/NOT EXISTS correlated predicates, SOME/ANY/ALL quantified subqueries, LIKE prefix%, LIKE %suffix, LIKE %substring%, LIKE exact
+| 16 | E2E: ORDER BY | `[e2e][orderby]` | 5 | ASC default, DESC, string column, multiple keys, CASE-based custom ordering
 | 17 | E2E: LIMIT/OFFSET | `[e2e][limit]` | 5 | Basic LIMIT, LIMIT+OFFSET, LIMIT > row count, OFFSET beyond rows, LIMIT 0
 | 18 | E2E: DISTINCT | `[e2e][distinct]` | 2 | DISTINCT on duplicates, DISTINCT on unique column
 | 19 | E2E: Aggregation | `[e2e][aggregation]` | 12 | COUNT(*), COUNT(col), SUM(int), AVG(float), MIN/MAX int, MIN/MAX string, GROUP BY+COUNT, GROUP BY+SUM, GROUP BY+multiple aggs, HAVING
@@ -288,26 +288,26 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 
 | Category | Tests | Coverage |
 |----------|------:|----------|
-| Parsing & Grammar | 81 | SQL parsing, case insensitivity, punctuation, operator precedence, comments |
+| Parsing & Grammar | 85 | SQL parsing, case insensitivity, punctuation, operator precedence, comments |
 | Storage & Indexes | 36 | Value ops, Table CRUD, Catalog, Hash/BTree indexes, integration |
 | Query Pipeline | 15 | Planner nodes, optimizer rules, executor stats |
-| End-to-End & Regression | 101 | Full pipeline, edge cases, regression, benchmarks |
+| End-to-End & Regression | 104 | Full pipeline, edge cases, regression, benchmarks |
 | CLI & Script Execution | 25 | Dot commands, `--file`, `.source`, error-stop behavior |
 | DML Operations | 20 | INSERT/UPDATE/DELETE, MERGE (upsert, update-only, insert-only) |
 | DDL Operations | 27 | ALTER TABLE, DROP TABLE/INDEX/VIEW, TRUNCATE |
 | Query Plan Visualization | 4 | EXPLAIN tree connectors, per-node stats, DOT export, `.plan` |
 | Triggers | 9 | CREATE/DROP TRIGGER, BEFORE/AFTER firing, multi-statement BEGIN...END, `.triggers` |
 | Constraints | 20 | NOT NULL, PRIMARY KEY, UNIQUE, CHECK, REFERENCES (FK) auto-index, UPDATE enforcement |
-| **Total** | **383** | **1169 assertions — all passing** |
+| **Total** | **390** | **1219 assertions — all passing** |
 
 ### Features Tested
 
 #### SQL Commands
-- `SELECT` (with `*`, column list, expressions, aliases)
+- `SELECT` (with `*`, column list, expressions, aliases, `CASE WHEN ... THEN ... ELSE ... END`)
 - `SELECT DISTINCT`
 - `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`
 - `CREATE TABLE` (INT, FLOAT, VARCHAR, VARCHAR(n), INTEGER, DOUBLE, TEXT)
-- `CREATE INDEX` (basic B-Tree, USING HASH)
+- `CREATE INDEX` (basic B-Tree, USING HASH, USING BTREE)
 - `INSERT INTO ... VALUES` (single row, multi-row, with column validation)
 - `UPDATE ... SET ... WHERE` (single/multi column SET, optional WHERE)
 - `DELETE FROM ... WHERE` (with or without WHERE clause)

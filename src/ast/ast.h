@@ -81,6 +81,11 @@ struct Expr {
     // BETWEEN
     ExprPtr between_low;
     ExprPtr between_high;
+    // CASE expression
+    ExprPtr case_base;  // non-null for simple CASE, null for searched CASE
+    std::vector<ExprPtr> case_when_conds;
+    std::vector<ExprPtr> case_then_exprs;
+    ExprPtr case_else_expr;
     // Alias for SELECT list
     std::string alias;
 

@@ -126,6 +126,18 @@ std::string Expr::to_string() const {
         }
         case ExprType::BETWEEN_EXPR:
             return operand->to_string() + " BETWEEN " + between_low->to_string() + " AND " + between_high->to_string();
+        case ExprType::CASE_EXPR: {
+            std::string s = "CASE";
+            if (case_base) s += " " + case_base->to_string();
+            size_t n = std::min(case_when_conds.size(), case_then_exprs.size());
+            for (size_t i = 0; i < n; i++) {
+                s += " WHEN " + case_when_conds[i]->to_string();
+                s += " THEN " + case_then_exprs[i]->to_string();
+            }
+            if (case_else_expr) s += " ELSE " + case_else_expr->to_string();
+            s += " END";
+            return s;
+        }
         default:
             return "?expr?";
     }

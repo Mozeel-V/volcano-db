@@ -42,4 +42,12 @@ struct RawConstraints {
 /* List of string literals (for multi-statement trigger bodies) */
 struct RawStrList { char** items; int count; int cap; };
 
+/* CASE arms: parallel WHEN condition/value and THEN result expressions */
+struct RawCaseList {
+    ast::Expr** whens;
+    ast::Expr** thens;
+    int count;
+    int cap;
+};
+
 #endif // PARSER_TYPES_H
