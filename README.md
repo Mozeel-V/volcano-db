@@ -228,7 +228,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | # | Section | Tag(s) | Count | Description |
 |---|---------|--------|-------|-------------|
 | 1 | Parser: DDL Statements | `[parser][ddl]` | 14 | CREATE TABLE (INT, FLOAT, VARCHAR, VARCHAR(n), INTEGER, DOUBLE, TEXT), CREATE INDEX (basic, USING HASH), INSERT, LOAD, FK ON DELETE CASCADE/RESTRICT parsing
-| 2 | Parser: SELECT Basics | `[parser][select]` | 6 | SELECT *, specific columns, alias (AS / implicit), DISTINCT, table alias
+| 2 | Parser: SELECT Basics | `[parser][select]` | 10 | SELECT *, specific columns, alias (AS / implicit), DISTINCT, table alias, UNION, UNION ALL, INTERSECT, EXCEPT
 | 3 | Parser: Expressions | `[parser][expr]` | 24 | Literals (int, float, string, NULL), arithmetic ops (+,-,*,/,%), comparisons (=,!=,<>,<,>,<=,>=), logical (AND, OR, NOT), IS NULL / IS NOT NULL, LIKE, BETWEEN, IN (list & subquery), NOT IN (subquery), EXISTS/NOT EXISTS, SOME/ANY/ALL quantified predicates, negation, parenthesized, qualified columns
 | 4 | Parser: Aggregate Functions | `[parser][aggregate]` | 4 | COUNT(*), COUNT(column), COUNT(DISTINCT col), SUM/AVG/MIN/MAX
 | 5 | Parser: Clauses | `[parser][clause]` | 8 | WHERE, GROUP BY, HAVING, ORDER BY (ASC default, DESC, multiple keys), LIMIT, LIMIT+OFFSET
@@ -298,13 +298,14 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | Query Plan Visualization | 4 | EXPLAIN tree connectors, per-node stats, DOT export, `.plan` |
 | Triggers | 9 | CREATE/DROP TRIGGER, BEFORE/AFTER firing, multi-statement BEGIN...END, `.triggers` |
 | Constraints | 20 | NOT NULL, PRIMARY KEY, UNIQUE, CHECK, REFERENCES (FK) auto-index, UPDATE enforcement |
-| **Total** | **375** | **1143 assertions — all passing** |
+| **Total** | **383** | **1169 assertions — all passing** |
 
 ### Features Tested
 
 #### SQL Commands
 - `SELECT` (with `*`, column list, expressions, aliases)
 - `SELECT DISTINCT`
+- `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`
 - `CREATE TABLE` (INT, FLOAT, VARCHAR, VARCHAR(n), INTEGER, DOUBLE, TEXT)
 - `CREATE INDEX` (basic B-Tree, USING HASH)
 - `INSERT INTO ... VALUES` (single row, multi-row, with column validation)

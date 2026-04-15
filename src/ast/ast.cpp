@@ -167,6 +167,18 @@ std::string SelectStmt::to_string() const {
     }
     if (limit >= 0) ss << " LIMIT " << limit;
     if (offset > 0) ss << " OFFSET " << offset;
+
+    if (set_op != SetOpType::SO_NONE && set_rhs) {
+        switch (set_op) {
+            case SetOpType::SO_UNION:      ss << " UNION "; break;
+            case SetOpType::SO_UNION_ALL:  ss << " UNION ALL "; break;
+            case SetOpType::SO_INTERSECT:  ss << " INTERSECT "; break;
+            case SetOpType::SO_EXCEPT:     ss << " EXCEPT "; break;
+            default: break;
+        }
+        ss << set_rhs->to_string();
+    }
+
     return ss.str();
 }
 

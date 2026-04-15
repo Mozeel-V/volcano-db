@@ -2,6 +2,7 @@
 
 #include <stdexcept>
 #include <unordered_set>
+#include <unordered_map>
 
 #include "optimizer/optimizer.h"
 
@@ -11,6 +12,85 @@ using namespace ast;
 using namespace storage;
 
 static ExecResult execute_select_core(const SelectStmt& stmt, Catalog& catalog) {
+    auto merge_stats = [](ExecStats& dst, const ExecStats& src) {
+        dst.rows_scanned += src.rows_scanned;
+        dst.rows_filtered += src.rows_filtered;
+        dst.join_comparisons += src.join_comparisons;
+        dst.subqueries_executed += src.subqueries_executed;
+        dst.subqueries_cached += src.subqueries_cached;
+        dst.exec_time_ms += src.exec_time_ms;
+    };
+
+    auto row_key = [](const Row& row) -> std::string {
+        std::string key;
+        key.reserve(row.size() * 8);
+        for (const auto& v : row) {
+            key += value_display(v);
+            key.push_back('\x1f');
+        }
+        return key;
+    };
+
+    if (stmt.set_op != SetOpType::SO_NONE && stmt.set_rhs) {
+        SelectStmt lhs_stmt = stmt;
+        lhs_stmt.set_op = SetOpType::SO_NONE;
+        lhs_stmt.set_rhs.reset();
+
+        ExecResult lhs = execute_select_core(lhs_stmt, catalog);
+        ExecResult rhs = execute_select_core(*stmt.set_rhs, catalog);
+
+        if (lhs.columns.size() != rhs.columns.size()) {
+            throw std::runtime_error("Set operation requires same number of columns on both sides");
+        }
+
+        ExecResult out;
+        out.columns = lhs.columns;
+        merge_stats(out.stats, lhs.stats);
+        merge_stats(out.stats, rhs.stats);
+
+        if (stmt.set_op == SetOpType::SO_UNION_ALL) {
+            out.rows = lhs.rows;
+            out.rows.insert(out.rows.end(), rhs.rows.begin(), rhs.rows.end());
+            out.stats.rows_produced = out.rows.size();
+            return out;
+        }
+
+        std::unordered_set<std::string> lhs_keys;
+        lhs_keys.reserve(lhs.rows.size() * 2 + 1);
+        for (const auto& r : lhs.rows) lhs_keys.insert(row_key(r));
+
+        std::unordered_set<std::string> rhs_keys;
+        rhs_keys.reserve(rhs.rows.size() * 2 + 1);
+        for (const auto& r : rhs.rows) rhs_keys.insert(row_key(r));
+
+        std::unordered_set<std::string> seen;
+        seen.reserve(lhs.rows.size() + rhs.rows.size() + 1);
+
+        if (stmt.set_op == SetOpType::SO_UNION) {
+            for (const auto& r : lhs.rows) {
+                std::string k = row_key(r);
+                if (seen.insert(k).second) out.rows.push_back(r);
+            }
+            for (const auto& r : rhs.rows) {
+                std::string k = row_key(r);
+                if (seen.insert(k).second) out.rows.push_back(r);
+            }
+        } else if (stmt.set_op == SetOpType::SO_INTERSECT) {
+            for (const auto& r : lhs.rows) {
+                std::string k = row_key(r);
+                if (rhs_keys.count(k) && seen.insert(k).second) out.rows.push_back(r);
+            }
+        } else if (stmt.set_op == SetOpType::SO_EXCEPT) {
+            for (const auto& r : lhs.rows) {
+                std::string k = row_key(r);
+                if (!rhs_keys.count(k) && seen.insert(k).second) out.rows.push_back(r);
+            }
+        }
+
+        out.stats.rows_produced = out.rows.size();
+        return out;
+    }
+
     auto plan = planner::build_logical_plan(stmt, catalog);
     auto opt = optimizer::optimize(plan, catalog);
     return execute(opt, catalog);
@@ -64,6 +144,9 @@ static void materialize_dynamic_views_for_select_impl(
     std::unordered_set<std::string>& resolving) {
     for (const auto& tref : stmt.from_clause) {
         materialize_dynamic_views_for_tref(tref, catalog, temp_tables, resolving);
+    }
+    if (stmt.set_rhs) {
+        materialize_dynamic_views_for_select_impl(*stmt.set_rhs, catalog, temp_tables, resolving);
     }
 }
 

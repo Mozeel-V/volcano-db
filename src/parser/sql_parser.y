@@ -156,7 +156,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %type <olist>     opt_order_by order_list
 %type <cdlist>    column_def_list
 %type <str_val>   opt_alias data_type agg_name
-%type <ival>      opt_distinct opt_asc_desc join_kind before_after trigger_event quantifier_kw opt_on_delete
+%type <ival>      opt_distinct opt_asc_desc join_kind before_after trigger_event quantifier_kw opt_on_delete opt_union_all
 %type <constraints> col_constraints
 %type <slist>     trigger_body trigger_stmts
 %type <int_val>   opt_limit opt_offset
@@ -438,7 +438,27 @@ set_list:
 
 select_stmt:
       select_body         { $$ = $1; }
-    | WITH cte_list select_body { $$ = $3; }
+    | select_body UNION opt_union_all select_stmt {
+          $1->set_op = ($3 != 0) ? SetOpType::SO_UNION_ALL : SetOpType::SO_UNION;
+          $1->set_rhs.reset($4);
+          $$ = $1;
+      }
+    | select_body INTERSECT select_stmt {
+          $1->set_op = SetOpType::SO_INTERSECT;
+          $1->set_rhs.reset($3);
+          $$ = $1;
+      }
+    | select_body EXCEPT select_stmt {
+          $1->set_op = SetOpType::SO_EXCEPT;
+          $1->set_rhs.reset($3);
+          $$ = $1;
+      }
+    | WITH cte_list select_stmt { $$ = $3; }
+    ;
+
+opt_union_all:
+      /* empty */ { $$ = 0; }
+    | ALL         { $$ = 1; }
     ;
 
 cte_list:
@@ -518,7 +538,7 @@ table_primary:
           auto t = new TableRef(); t->type = TableRefType::BASE_TABLE;
           t->table_name = take_str($1); if ($2) t->alias = take_str($2); $$ = t;
       }
-    | '(' select_body ')' opt_alias {
+  | '(' select_stmt ')' opt_alias {
           auto t = new TableRef(); t->type = TableRefType::TRT_SUBQUERY;
           t->subquery.reset($2); if ($4) t->alias = take_str($4); $$ = t;
       }
@@ -660,7 +680,7 @@ expr_cmp:
           for (int i = 0; i < $4.count; i++) e->in_list.push_back(wrap($4.items[i]));
           free($4.items); $$ = e;
       }
-    | expr_add IN '(' select_body ')' {
+    | expr_add IN '(' select_stmt ')' {
           auto e = new Expr(); e->type = ExprType::IN_EXPR;
           e->left = wrap($1); e->subquery.reset($4); $$ = e;
       }
@@ -672,7 +692,7 @@ expr_cmp:
           auto e = new Expr(); e->type = ExprType::UNARY_OP; e->unary_op = UnaryOp::OP_NOT;
           e->operand = wrap(in_e); $$ = e;
       }
-    | expr_add NOT IN '(' select_body ')' {
+    | expr_add NOT IN '(' select_stmt ')' {
           auto in_e = new Expr(); in_e->type = ExprType::IN_EXPR;
           in_e->left = wrap($1); in_e->subquery.reset($5);
           auto e = new Expr(); e->type = ExprType::UNARY_OP; e->unary_op = UnaryOp::OP_NOT;
@@ -682,7 +702,7 @@ expr_cmp:
           auto e = new Expr(); e->type = ExprType::BETWEEN_EXPR;
           e->operand = wrap($1); e->between_low = wrap($3); e->between_high = wrap($5); $$ = e;
       }
-    | EXISTS '(' select_body ')' {
+    | EXISTS '(' select_stmt ')' {
           auto e = new Expr(); e->type = ExprType::EXISTS_EXPR;
           e->subquery.reset($3); $$ = e;
       }
@@ -759,7 +779,7 @@ expr_primary:
           e->args.push_back(wrap($4)); $$ = e;
       }
     | '(' expr ')' { $$ = $2; }
-    | '(' select_body ')' {
+    | '(' select_stmt ')' {
           auto e = new Expr(); e->type = ExprType::SUBQUERY;
           e->subquery.reset($2); $$ = e;
       }
