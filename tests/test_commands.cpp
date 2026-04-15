@@ -1333,6 +1333,73 @@ TEST_CASE("E2E: FK case insensitive", "[e2e][constraint][fk]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) inserted into 'fkci'"));
 }
 
+TEST_CASE("E2E: FK ON DELETE CASCADE deletes child rows", "[e2e][constraint][fk]") {
+    std::string output = run_interactive(
+        "CREATE TABLE parent_c (id INT PRIMARY KEY, val VARCHAR);\n"
+        "CREATE TABLE child_c (id INT, pid INT REFERENCES parent_c(id) ON DELETE CASCADE);\n"
+        "INSERT INTO parent_c VALUES (1, 'p1');\n"
+        "INSERT INTO child_c VALUES (10, 1);\n"
+        "DELETE FROM parent_c WHERE id = 1;\n"
+        "SELECT * FROM child_c;\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("1 row(s) deleted from 'parent_c'"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(0 rows)"));
+}
+
+TEST_CASE("E2E: FK ON DELETE RESTRICT blocks parent delete", "[e2e][constraint][fk]") {
+    std::string output = run_interactive(
+        "CREATE TABLE parent_r (id INT PRIMARY KEY, val VARCHAR);\n"
+        "CREATE TABLE child_r (id INT, pid INT REFERENCES parent_r(id) ON DELETE RESTRICT);\n"
+        "INSERT INTO parent_r VALUES (1, 'p1');\n"
+        "INSERT INTO child_r VALUES (10, 1);\n"
+        "DELETE FROM parent_r WHERE id = 1;\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Cannot delete: referenced by foreign key"));
+}
+
+TEST_CASE("E2E: FK default ON DELETE remains RESTRICT", "[e2e][constraint][fk]") {
+    std::string output = run_interactive(
+        "CREATE TABLE parent_d (id INT PRIMARY KEY, val VARCHAR);\n"
+        "CREATE TABLE child_d (id INT, pid INT REFERENCES parent_d(id));\n"
+        "INSERT INTO parent_d VALUES (1, 'p1');\n"
+        "INSERT INTO child_d VALUES (10, 1);\n"
+        "DELETE FROM parent_d WHERE id = 1;\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Cannot delete: referenced by foreign key"));
+}
+
+TEST_CASE("E2E: FK mixed CASCADE and RESTRICT is atomic", "[e2e][constraint][fk]") {
+    std::string output = run_interactive(
+        "CREATE TABLE parent_m (id INT PRIMARY KEY, val VARCHAR);\n"
+        "CREATE TABLE child_mc (id INT, pid INT REFERENCES parent_m(id) ON DELETE CASCADE);\n"
+        "CREATE TABLE child_mr (id INT, pid INT REFERENCES parent_m(id) ON DELETE RESTRICT);\n"
+        "INSERT INTO parent_m VALUES (1, 'p1');\n"
+        "INSERT INTO child_mc VALUES (10, 1);\n"
+        "INSERT INTO child_mr VALUES (20, 1);\n"
+        "DELETE FROM parent_m WHERE id = 1;\n"
+        "SELECT * FROM child_mc;\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Cannot delete: referenced by foreign key"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("10"));
+}
+
+TEST_CASE("E2E: FK ON DELETE CASCADE case insensitive", "[e2e][constraint][fk]") {
+    std::string output = run_interactive(
+        "create table parent_ci (id int primary key, val varchar);\n"
+        "create table child_ci (id int, pid int references parent_ci(id) on delete cascade);\n"
+        "insert into parent_ci values (1, 'p1');\n"
+        "insert into child_ci values (10, 1);\n"
+        "delete from parent_ci where id = 1;\n"
+        "select * from child_ci;\n"
+        ".quit\n"
+    );
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(0 rows)"));
+}
+
 TEST_CASE("E2E: Multi-statement trigger with BEGIN END", "[e2e][trigger][multi]") {
     std::string output = run_interactive(
         "CREATE TABLE orders (id INT, total INT);\n"

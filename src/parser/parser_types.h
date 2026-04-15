@@ -18,6 +18,7 @@ struct RawColDefList {
     ast::Expr** checks;
     char** fk_tables;
     char** fk_columns;
+    int* fk_on_delete;
 };
 
 /* INSERT rows: array of RawExprList (each is one row of values) */
@@ -35,6 +36,7 @@ struct RawConstraints {
     ast::Expr* check_expr;
     char* fk_table;
     char* fk_column;
+    int fk_on_delete;
 };
 
 /* List of string literals (for multi-statement trigger bodies) */

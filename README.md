@@ -227,7 +227,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 
 | # | Section | Tag(s) | Count | Description |
 |---|---------|--------|-------|-------------|
-| 1 | Parser: DDL Statements | `[parser][ddl]` | 11 | CREATE TABLE (INT, FLOAT, VARCHAR, VARCHAR(n), INTEGER, DOUBLE, TEXT), CREATE INDEX (basic, USING HASH), INSERT, LOAD
+| 1 | Parser: DDL Statements | `[parser][ddl]` | 14 | CREATE TABLE (INT, FLOAT, VARCHAR, VARCHAR(n), INTEGER, DOUBLE, TEXT), CREATE INDEX (basic, USING HASH), INSERT, LOAD, FK ON DELETE CASCADE/RESTRICT parsing
 | 2 | Parser: SELECT Basics | `[parser][select]` | 6 | SELECT *, specific columns, alias (AS / implicit), DISTINCT, table alias
 | 3 | Parser: Expressions | `[parser][expr]` | 24 | Literals (int, float, string, NULL), arithmetic ops (+,-,*,/,%), comparisons (=,!=,<>,<,>,<=,>=), logical (AND, OR, NOT), IS NULL / IS NOT NULL, LIKE, BETWEEN, IN (list & subquery), NOT IN (subquery), EXISTS/NOT EXISTS, SOME/ANY/ALL quantified predicates, negation, parenthesized, qualified columns
 | 4 | Parser: Aggregate Functions | `[parser][aggregate]` | 4 | COUNT(*), COUNT(column), COUNT(DISTINCT col), SUM/AVG/MIN/MAX
@@ -282,7 +282,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | 53 | Query Plan Visualization | `[e2e][explain]` `[e2e][commands]` | 4 | EXPLAIN tree connectors, EXPLAIN ANALYZE per-node actual stats, EXPLAIN FORMAT DOT (Graphviz), `.plan`/`.plan dot` commands |
 | 54 | Triggers | `[e2e][trigger]` | 6 | AFTER INSERT trigger fires, BEFORE DELETE trigger fires, DROP TRIGGER, nonexistent table error, case insensitivity, `.triggers` command |
 | 55 | Constraints | `[e2e][constraint]` | 14 | NOT NULL reject/allow, PK reject duplicate/null/auto-index, UNIQUE reject/allow-null, UPDATE NOT NULL/UNIQUE, CHECK reject/allow/update, case insensitivity, multiple constraints |
-| 56 | Foreign Keys | `[e2e][constraint][fk]` | 6 | FK rejects invalid INSERT, FK allows valid INSERT, FK rejects DELETE of referenced parent, FK rejects UPDATE to invalid, FK allows NULL, FK case insensitivity |
+| 56 | Foreign Keys | `[e2e][constraint][fk]` | 11 | FK rejects invalid INSERT, FK allows valid INSERT, FK rejects UPDATE to invalid, FK allows NULL, FK case insensitivity, ON DELETE CASCADE deletes children, ON DELETE RESTRICT blocks delete, default ON DELETE RESTRICT, mixed CASCADE+RESTRICT atomic behavior |
 
 ### Test Categories Summary
 
@@ -298,7 +298,7 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 | Query Plan Visualization | 4 | EXPLAIN tree connectors, per-node stats, DOT export, `.plan` |
 | Triggers | 9 | CREATE/DROP TRIGGER, BEFORE/AFTER firing, multi-statement BEGIN...END, `.triggers` |
 | Constraints | 20 | NOT NULL, PRIMARY KEY, UNIQUE, CHECK, REFERENCES (FK) auto-index, UPDATE enforcement |
-| **Total** | **367** | **1089 assertions — all passing** |
+| **Total** | **375** | **1143 assertions — all passing** |
 
 ### Features Tested
 
@@ -348,7 +348,9 @@ DROP TRIGGER audit_log;
 - `PRIMARY KEY` — implies NOT NULL + UNIQUE, auto-creates BTree index
 - `UNIQUE` — rejects duplicate values (multiple NULLs allowed per SQL standard)
 - `CHECK (<expr>)` — enforces arbitrary boolean expression on INSERT/UPDATE
-- `REFERENCES table(column)` — FOREIGN KEY referential integrity (rejects invalid references, blocks parent DELETE)
+- `REFERENCES table(column)` — FOREIGN KEY referential integrity
+- `REFERENCES table(column) ON DELETE RESTRICT` — blocks parent DELETE when referenced (default)
+- `REFERENCES table(column) ON DELETE CASCADE` — deletes referencing child rows automatically
 
 ```sql
 CREATE TABLE users (

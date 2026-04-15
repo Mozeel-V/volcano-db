@@ -135,6 +135,11 @@ struct CTE {
     std::shared_ptr<SelectStmt> query;
 };
 
+enum class FkDeleteAction {
+    RESTRICT,
+    CASCADE,
+};
+
 enum class SetOpType {
     SO_NONE, SO_UNION, SO_UNION_ALL, SO_INTERSECT, SO_EXCEPT,
 };
@@ -172,6 +177,7 @@ struct ColumnDef {
     bool has_fk = false;
     std::string fk_ref_table;
     std::string fk_ref_column;
+    FkDeleteAction fk_on_delete = FkDeleteAction::RESTRICT;
 };
 
 struct CreateTableStmt {

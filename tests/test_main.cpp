@@ -220,6 +220,38 @@ TEST_CASE("Parser: LOAD statement", "[parser][ddl]") {
     CHECK(stmt->load->file_path == "data.csv");
 }
 
+TEST_CASE("Parser: FK with ON DELETE CASCADE", "[parser][ddl]") {
+    auto stmt = ast::parse_sql("CREATE TABLE child (id INT, pid INT REFERENCES parent(id) ON DELETE CASCADE);");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_CREATE_TABLE);
+    REQUIRE(stmt->create_table->columns.size() == 2);
+    auto& fk_col = stmt->create_table->columns[1];
+    REQUIRE(fk_col.has_fk == true);
+    CHECK(fk_col.fk_ref_table == "parent");
+    CHECK(fk_col.fk_ref_column == "id");
+    CHECK(fk_col.fk_on_delete == ast::FkDeleteAction::CASCADE);
+}
+
+TEST_CASE("Parser: FK with ON DELETE RESTRICT", "[parser][ddl]") {
+    auto stmt = ast::parse_sql("CREATE TABLE child (id INT, pid INT REFERENCES parent(id) ON DELETE RESTRICT);");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_CREATE_TABLE);
+    REQUIRE(stmt->create_table->columns.size() == 2);
+    auto& fk_col = stmt->create_table->columns[1];
+    REQUIRE(fk_col.has_fk == true);
+    CHECK(fk_col.fk_on_delete == ast::FkDeleteAction::RESTRICT);
+}
+
+TEST_CASE("Parser: FK default ON DELETE is RESTRICT", "[parser][ddl]") {
+    auto stmt = ast::parse_sql("CREATE TABLE child (id INT, pid INT REFERENCES parent(id));");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_CREATE_TABLE);
+    REQUIRE(stmt->create_table->columns.size() == 2);
+    auto& fk_col = stmt->create_table->columns[1];
+    REQUIRE(fk_col.has_fk == true);
+    CHECK(fk_col.fk_on_delete == ast::FkDeleteAction::RESTRICT);
+}
+
 // Select Statement Basics
 
 TEST_CASE("Parser: simple SELECT *", "[parser][select]") {

@@ -24,7 +24,7 @@ static std::string take_str(char* s) { std::string r(s); free(s); return r; }
 static RawExprList make_elist() { RawExprList l = {nullptr,0,0}; return l; }
 static RawTRefList make_tlist() { RawTRefList l = {nullptr,0,0}; return l; }
 static RawOrderList make_olist(){ RawOrderList l = {0,0,nullptr,nullptr}; return l; }
-static RawColDefList make_cdlist(){ RawColDefList l = {0,0,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr}; return l; }
+static RawColDefList make_cdlist(){ RawColDefList l = {0,0,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr}; return l; }
 
 static RawStrList make_slist() { RawStrList l = {nullptr,0,0}; return l; }
 static void slist_push(RawStrList& l, char* s) {
@@ -56,6 +56,7 @@ static void cdlist_push(RawColDefList& l, char* n, char* t, RawConstraints c) {
         l.checks = (ast::Expr**)realloc(l.checks, l.cap*sizeof(ast::Expr*));
         l.fk_tables = (char**)realloc(l.fk_tables, l.cap*sizeof(char*));
         l.fk_columns = (char**)realloc(l.fk_columns, l.cap*sizeof(char*));
+        l.fk_on_delete = (int*)realloc(l.fk_on_delete, l.cap*sizeof(int));
     }
     l.names[l.count] = n; l.types[l.count] = t;
     l.not_null[l.count] = c.not_null || c.primary_key;
@@ -65,6 +66,7 @@ static void cdlist_push(RawColDefList& l, char* n, char* t, RawConstraints c) {
     l.checks[l.count] = c.check_expr;
     l.fk_tables[l.count] = c.fk_table;
     l.fk_columns[l.count] = c.fk_column;
+    l.fk_on_delete[l.count] = c.fk_on_delete;
     l.count++;
 }
 
@@ -131,7 +133,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %token MERGE MATCHED
 %token FORMAT DOT
 %token TRIGGER BEFORE AFTER FOR EACH ROW_KW EXECUTE
-%token DEFAULT PRIMARY KEY UNIQUE CHECK_KW REFERENCES
+%token DEFAULT PRIMARY KEY UNIQUE CHECK_KW REFERENCES CASCADE RESTRICT
 %token BEGIN_KW
 %token COUNT SUM AVG MIN MAX
 %token TYPE_INT TYPE_FLOAT TYPE_VARCHAR
@@ -154,7 +156,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %type <olist>     opt_order_by order_list
 %type <cdlist>    column_def_list
 %type <str_val>   opt_alias data_type agg_name
-%type <ival>      opt_distinct opt_asc_desc join_kind before_after trigger_event quantifier_kw
+%type <ival>      opt_distinct opt_asc_desc join_kind before_after trigger_event quantifier_kw opt_on_delete
 %type <constraints> col_constraints
 %type <slist>     trigger_body trigger_stmts
 %type <int_val>   opt_limit opt_offset
@@ -210,10 +212,11 @@ statement:
                   cd.has_fk = true;
                   cd.fk_ref_table = take_str($5.fk_tables[i]);
                   cd.fk_ref_column = take_str($5.fk_columns[i]);
+                  cd.fk_on_delete = ($5.fk_on_delete[i] == 1) ? FkDeleteAction::CASCADE : FkDeleteAction::RESTRICT;
               }
               ct->columns.push_back(cd);
           }
-          free($5.names); free($5.types); free($5.not_null); free($5.primary_key); free($5.is_unique); free($5.defaults); free($5.checks); free($5.fk_tables); free($5.fk_columns);
+              free($5.names); free($5.types); free($5.not_null); free($5.primary_key); free($5.is_unique); free($5.defaults); free($5.checks); free($5.fk_tables); free($5.fk_columns); free($5.fk_on_delete);
           st->create_table = ct; $$ = st;
       }
     | CREATE INDEX IDENTIFIER ON IDENTIFIER '(' IDENTIFIER ')' {
@@ -568,7 +571,7 @@ col_constraints:
       /* empty */ {
           $$.not_null = 0; $$.primary_key = 0; $$.is_unique = 0;
           $$.default_val = nullptr; $$.check_expr = nullptr;
-          $$.fk_table = nullptr; $$.fk_column = nullptr;
+      $$.fk_table = nullptr; $$.fk_column = nullptr; $$.fk_on_delete = 0;
       }
     | col_constraints NOT NULL_KW {
           $$ = $1; $$.not_null = 1;
@@ -585,10 +588,16 @@ col_constraints:
     | col_constraints CHECK_KW '(' expr ')' {
           $$ = $1; $$.check_expr = $4;
       }
-    | col_constraints REFERENCES IDENTIFIER '(' IDENTIFIER ')' {
-          $$ = $1; $$.fk_table = $3; $$.fk_column = $5;
+        | col_constraints REFERENCES IDENTIFIER '(' IDENTIFIER ')' opt_on_delete {
+          $$ = $1; $$.fk_table = $3; $$.fk_column = $5; $$.fk_on_delete = $7;
       }
     ;
+
+    opt_on_delete:
+      /* empty */                 { $$ = 0; }
+        | ON DELETE_KW CASCADE        { $$ = 1; }
+        | ON DELETE_KW RESTRICT       { $$ = 0; }
+        ;
 
 data_type:
       TYPE_INT                         { $$ = strdup("INT"); }

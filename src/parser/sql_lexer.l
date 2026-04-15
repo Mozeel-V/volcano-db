@@ -120,6 +120,8 @@ extern int yylineno;
 "UNIQUE"            { return UNIQUE; }
 "CHECK"             { return CHECK_KW; }
 "REFERENCES"        { return REFERENCES; }
+"CASCADE"           { return CASCADE; }
+"RESTRICT"          { return RESTRICT; }
 "BEGIN"             { return BEGIN_KW; }
 
 "<="                { return LEQ; }

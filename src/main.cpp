@@ -7,6 +7,7 @@
 #include <fstream>
 #include <algorithm>
 #include <vector>
+#include <set>
 
 #include "ast/ast.h"
 #include "storage/storage.h"
@@ -274,6 +275,94 @@ static void print_result(const executor::ExecResult& res, bool show_stats) {
     }
 }
 
+using DeletePlan = std::unordered_map<std::string, std::set<size_t>>;
+
+static void collect_delete_plan(storage::Catalog& catalog,
+                                const std::string& parent_table_name,
+                                const std::set<size_t>& requested_rows,
+                                DeletePlan& plan) {
+    if (requested_rows.empty()) return;
+
+    auto* parent_tbl = catalog.get_table(parent_table_name);
+    if (!parent_tbl) return;
+
+    auto& planned_rows = plan[parent_table_name];
+    std::set<size_t> frontier;
+    for (size_t r : requested_rows) {
+        if (planned_rows.insert(r).second) {
+            frontier.insert(r);
+        }
+    }
+    if (frontier.empty()) return;
+
+    for (auto& [child_name, child_tbl] : catalog.tables) {
+        for (auto& fk : child_tbl->foreign_keys) {
+            if (fk.ref_table != parent_table_name) continue;
+
+            int parent_col = parent_tbl->column_index(fk.ref_column);
+            int child_col = child_tbl->column_index(fk.column_name);
+            if (parent_col < 0 || child_col < 0) continue;
+
+            std::set<size_t> child_cascade_rows;
+            for (size_t ci = 0; ci < child_tbl->rows.size(); ci++) {
+                const auto& crow = child_tbl->rows[ci];
+                if (storage::value_is_null(crow[child_col])) continue;
+
+                bool references_frontier = false;
+                for (size_t pi : frontier) {
+                    if (pi >= parent_tbl->rows.size()) continue;
+                    if (storage::value_equal(crow[child_col], parent_tbl->rows[pi][parent_col])) {
+                        references_frontier = true;
+                        break;
+                    }
+                }
+                if (!references_frontier) continue;
+
+                if (fk.on_delete == storage::FkDeleteAction::RESTRICT) {
+                    auto it = plan.find(child_name);
+                    bool already_planned = (it != plan.end() && it->second.count(ci) > 0);
+                    if (!already_planned) {
+                        throw std::runtime_error("Cannot delete: referenced by foreign key in '" + child_name + "'");
+                    }
+                } else {
+                    child_cascade_rows.insert(ci);
+                }
+            }
+
+            if (!child_cascade_rows.empty()) {
+                collect_delete_plan(catalog, child_name, child_cascade_rows, plan);
+            }
+        }
+    }
+}
+
+static void apply_delete_plan(storage::Catalog& catalog, const DeletePlan& plan) {
+    for (const auto& [table_name, rows_to_delete] : plan) {
+        auto* tbl = catalog.get_table(table_name);
+        if (!tbl || rows_to_delete.empty()) continue;
+
+        // Erase from back to front so indices remain valid.
+        for (auto it = rows_to_delete.rbegin(); it != rows_to_delete.rend(); ++it) {
+            if (*it < tbl->rows.size()) {
+                tbl->rows.erase(tbl->rows.begin() + static_cast<std::ptrdiff_t>(*it));
+            }
+        }
+    }
+
+    // Rebuild indexes for all affected tables.
+    for (const auto& [table_name, _] : plan) {
+        auto* tbl = catalog.get_table(table_name);
+        if (!tbl) continue;
+
+        for (auto& [key, idx] : catalog.indexes) {
+            if (idx->table_name == table_name) idx->build(*tbl);
+        }
+        for (auto& [key, idx] : catalog.btree_indexes) {
+            if (idx->table_name == table_name) idx->build(*tbl);
+        }
+    }
+}
+
 static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
     auto stmt = ast::parse_sql(sql);
     if (!stmt) {
@@ -312,6 +401,9 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                         fk.column_name = cd.name;
                         fk.ref_table = cd.fk_ref_table;
                         fk.ref_column = cd.fk_ref_column;
+                        fk.on_delete = (cd.fk_on_delete == ast::FkDeleteAction::CASCADE)
+                            ? storage::FkDeleteAction::CASCADE
+                            : storage::FkDeleteAction::RESTRICT;
                         tbl->foreign_keys.push_back(fk);
                     }
                     tbl->schema.push_back(cs);
@@ -550,53 +642,18 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
 
                 size_t before = tbl->rows.size();
 
-                // We collect rows to delete and check FK references
-                std::vector<size_t> to_delete;
+                std::set<size_t> root_rows;
                 for (size_t i = 0; i < tbl->rows.size(); i++) {
                     if (!del.where_clause || dml_eval_bool(del.where_clause, tbl, tbl->rows[i])) {
-                        to_delete.push_back(i);
+                        root_rows.insert(i);
                     }
                 }
 
-                // We check if any child table references the rows being deleted
-                for (size_t di : to_delete) {
-                    auto& drow = tbl->rows[di];
-                    for (auto& [tname, child_tbl] : catalog.tables) {
-                        for (auto& fk : child_tbl->foreign_keys) {
-                            if (fk.ref_table != del.table_name) continue;
-                            int parent_col = tbl->column_index(fk.ref_column);
-                            int child_col = child_tbl->column_index(fk.column_name);
-                            if (parent_col < 0 || child_col < 0) continue;
-                            for (auto& crow : child_tbl->rows) {
-                                if (!storage::value_is_null(crow[child_col]) && storage::value_equal(crow[child_col], drow[parent_col])) {
-                                    throw std::runtime_error("Cannot delete: referenced by foreign key in '" + tname + "'");
-                                }
-                            }
-                        }
-                    }
-                }
+                DeletePlan delete_plan;
+                collect_delete_plan(catalog, del.table_name, root_rows, delete_plan);
+                apply_delete_plan(catalog, delete_plan);
 
-                // We perform deletion
-                if (!del.where_clause) {
-                    tbl->rows.clear();
-                } else {
-                    tbl->rows.erase(
-                        std::remove_if(tbl->rows.begin(), tbl->rows.end(),
-                            [&](const storage::Row& row) {
-                                return dml_eval_bool(del.where_clause, tbl, row);
-                            }),
-                        tbl->rows.end()
-                    );
-                }
                 size_t deleted = before - tbl->rows.size();
-
-                // We rebuild indexes for this table
-                for (auto& [key, idx] : catalog.indexes) {
-                    if (idx->table_name == del.table_name) idx->build(*tbl);
-                }
-                for (auto& [key, idx] : catalog.btree_indexes) {
-                    if (idx->table_name == del.table_name) idx->build(*tbl);
-                }
 
                 // We fire AFTER DELETE triggers
                 for (auto* td : catalog.get_triggers(del.table_name, storage::TriggerDef::ON_DELETE)) {

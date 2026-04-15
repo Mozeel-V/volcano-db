@@ -23,6 +23,11 @@ using Value = std::variant<std::monostate, int64_t, double, std::string>;
 
 enum class DataType { INT, FLOAT, VARCHAR };
 
+enum class FkDeleteAction {
+    RESTRICT,
+    CASCADE,
+};
+
 struct ColumnSchema {
     std::string name;
     DataType type;
@@ -39,6 +44,7 @@ struct ForeignKeyDef {
     std::string column_name;
     std::string ref_table;
     std::string ref_column;
+    FkDeleteAction on_delete = FkDeleteAction::RESTRICT;
 };
 
 class Table {
