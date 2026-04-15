@@ -8,7 +8,6 @@ A SQL query processor and optimizer built from scratch in C++17 using Flex and B
     <a href="#running">Running</a> •
     <a href="#architecture">Architecture</a> •
     <a href="#supported-sql">Supported SQL</a> •
-    <a href="#extending-the-project">Extending the project</a> •
     <a href="#sqp-test-suite-documentation">Testing</a>
 </p>
 
