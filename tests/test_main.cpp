@@ -229,6 +229,26 @@ TEST_CASE("Parser: CREATE MATERIALIZED VIEW", "[parser][ddl]") {
     REQUIRE(stmt->create_view->query != nullptr);
 }
 
+TEST_CASE("Parser: CREATE FUNCTION", "[parser][ddl][function]") {
+    auto stmt = ast::parse_sql("CREATE FUNCTION add1(x INT) RETURNS INT AS 'x + 1';");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_CREATE_FUNCTION);
+    REQUIRE(stmt->create_function != nullptr);
+    CHECK(stmt->create_function->function_name == "add1");
+    REQUIRE(stmt->create_function->params.size() == 1);
+    CHECK(stmt->create_function->params[0].name == "x");
+    CHECK(stmt->create_function->params[0].data_type == "INT");
+    CHECK(stmt->create_function->return_type == "INT");
+    CHECK(stmt->create_function->body_sql == "x + 1");
+}
+
+TEST_CASE("Parser: DROP FUNCTION", "[parser][ddl][function]") {
+    auto stmt = ast::parse_sql("DROP FUNCTION add1;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_DROP_FUNCTION);
+    CHECK(stmt->drop_name == "add1");
+}
+
 TEST_CASE("Parser: INSERT INTO basic", "[parser][ddl]") {
     auto stmt = ast::parse_sql("INSERT INTO users VALUES (1, 'Alice', 30);");
     REQUIRE(stmt != nullptr);
@@ -974,6 +994,19 @@ TEST_CASE("Parser: SUM, AVG, MIN, MAX", "[parser][aggregate]") {
     CHECK(stmt->select->select_list[1]->func_name == "AVG");
     CHECK(stmt->select->select_list[2]->func_name == "MIN");
     CHECK(stmt->select->select_list[3]->func_name == "MAX");
+}
+
+TEST_CASE("Parser: scalar function call", "[parser][function]") {
+    auto stmt = ast::parse_sql("SELECT LOWER(name), ROUND(value, 1), NOW() FROM t;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->select->select_list.size() == 3);
+    CHECK(stmt->select->select_list[0]->type == ast::ExprType::FUNC_CALL);
+    CHECK(stmt->select->select_list[0]->func_name == "LOWER");
+    CHECK(stmt->select->select_list[0]->args.size() == 1);
+    CHECK(stmt->select->select_list[1]->func_name == "ROUND");
+    CHECK(stmt->select->select_list[1]->args.size() == 2);
+    CHECK(stmt->select->select_list[2]->func_name == "NOW");
+    CHECK(stmt->select->select_list[2]->args.empty());
 }
 
 // Parser -- Clauses (Where, Group By, Having, Order By, Limit)
@@ -1881,6 +1914,85 @@ TEST_CASE("E2E: WHERE with LIKE exact match", "[e2e][where]") {
     create_test_table(catalog);
     auto res = run_query(catalog, "SELECT * FROM t WHERE name LIKE 'Bob';");
     CHECK(res.rows.size() == 1);
+}
+
+TEST_CASE("E2E: WHERE with LIKE underscore wildcard", "[e2e][where]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    auto res = run_query(catalog, "SELECT * FROM t WHERE name LIKE '_ve';");
+    REQUIRE(res.rows.size() == 1);
+    CHECK(as_string(res.rows[0][1]) == "Eve");
+}
+
+TEST_CASE("E2E: WHERE with LIKE escaped wildcard literals", "[e2e][where]") {
+    storage::Catalog catalog;
+    auto tbl = std::make_shared<storage::Table>();
+    tbl->name = "p";
+    tbl->schema = {{"name", storage::DataType::VARCHAR}};
+    tbl->rows = {
+        {std::string("a_b")},
+        {std::string("a%b")},
+        {std::string("axb")},
+        {std::string("aXXb")},
+    };
+    catalog.add_table(tbl);
+
+    auto wildcard = run_query(catalog, "SELECT name FROM p WHERE name LIKE 'a_b' ORDER BY name;");
+    CHECK(wildcard.rows.size() == 3); // a_b, a%b, axb
+
+    auto escaped_us = run_query(catalog, "SELECT name FROM p WHERE name LIKE 'a\\_b';");
+    REQUIRE(escaped_us.rows.size() == 1);
+    CHECK(as_string(escaped_us.rows[0][0]) == "a_b");
+
+    auto escaped_pct = run_query(catalog, "SELECT name FROM p WHERE name LIKE 'a\\%b';");
+    REQUIRE(escaped_pct.rows.size() == 1);
+    CHECK(as_string(escaped_pct.rows[0][0]) == "a%b");
+}
+
+TEST_CASE("E2E: scalar built-in functions", "[e2e][function]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+
+    auto res = run_query(
+        catalog,
+        "SELECT LOWER(name), UPPER(name), LENGTH(name), TRIM('  hi  '), SUBSTR(name, 2, 2), "
+        "ABS(-7), ROUND(3.6), COALESCE(NULL, name), NULLIF(name, 'Alice') "
+        "FROM t WHERE id = 1;"
+    );
+
+    REQUIRE(res.rows.size() == 1);
+    REQUIRE(res.rows[0].size() == 9);
+    CHECK(as_string(res.rows[0][0]) == "alice");
+    CHECK(as_string(res.rows[0][1]) == "ALICE");
+    CHECK(as_int(res.rows[0][2]) == 5);
+    CHECK(as_string(res.rows[0][3]) == "hi");
+    CHECK(as_string(res.rows[0][4]) == "li");
+    CHECK(as_int(res.rows[0][5]) == 7);
+    CHECK(as_int(res.rows[0][6]) == 4);
+    CHECK(as_string(res.rows[0][7]) == "Alice");
+    CHECK(is_null(res.rows[0][8]));
+}
+
+TEST_CASE("E2E: user-defined function invocation", "[e2e][function][udf]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+
+    auto fn_stmt = ast::parse_sql("SELECT x + 1 FROM t;");
+    REQUIRE(fn_stmt != nullptr);
+    REQUIRE(fn_stmt->type == ast::StmtType::ST_SELECT);
+    REQUIRE(fn_stmt->select->select_list.size() == 1);
+
+    auto fn = std::make_shared<storage::Catalog::FunctionDef>();
+    fn->name = "add1";
+    fn->params = {{"x", storage::DataType::INT}};
+    fn->return_type = storage::DataType::INT;
+    fn->body_expr = fn_stmt->select->select_list[0];
+    catalog.add_function(fn);
+
+    auto res = run_query(catalog, "SELECT add1(id) FROM t WHERE id = 2;");
+    REQUIRE(res.rows.size() == 1);
+    REQUIRE(res.rows[0].size() == 1);
+    CHECK(as_int(res.rows[0][0]) == 3);
 }
 
 // End-To-End -- Order By

@@ -94,6 +94,18 @@ static void alist_push(RawAssignList& l, char* col, Expr* val) {
     l.cols[l.count] = col; l.vals[l.count] = val; l.count++;
 }
 
+static RawFuncParamList make_fplist() { RawFuncParamList l = {nullptr,nullptr,0,0}; return l; }
+static void fplist_push(RawFuncParamList& l, char* name, char* type) {
+  if (l.count >= l.cap) {
+    l.cap = l.cap ? l.cap * 2 : 4;
+    l.names = (char**)realloc(l.names, l.cap * sizeof(char*));
+    l.types = (char**)realloc(l.types, l.cap * sizeof(char*));
+  }
+  l.names[l.count] = name;
+  l.types[l.count] = type;
+  l.count++;
+}
+
 /* Wrap raw Expr* into ExprPtr (takes ownership) */
 static ExprPtr wrap(Expr* e) { return std::shared_ptr<Expr>(e); }
 static TableRefPtr twrap(TableRef* t) { return std::shared_ptr<TableRef>(t); }
@@ -128,6 +140,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
     RawColDefList    cdlist;
     RawRowList       rowlist;
     RawAssignList    assignlist;
+    RawFuncParamList fparams;
     RawConstraints   constraints;
     RawStrList       slist;
     RawCaseList      caselist;
@@ -140,6 +153,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %token GROUP BY HAVING ORDER ASC DESC LIMIT OFFSET
 %token UNION INTERSECT EXCEPT ALL SOME ANY
 %token WITH CREATE TABLE VIEW MATERIALIZED INDEX USING HASH BTREE
+%token FUNCTION RETURNS
 %token INSERT INTO VALUES LOAD EXPLAIN ANALYZE BENCHMARK_KW
 %token COMMIT_KW ROLLBACK_KW TRANSACTION_KW
 %token UPDATE SET DELETE_KW
@@ -169,7 +183,8 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %type <tlist>     from_list
 %type <olist>     opt_order_by order_list
 %type <cdlist>    column_def_list
-%type <str_val>   opt_alias data_type agg_name
+%type <fparams>   func_param_list opt_func_param_list
+%type <str_val>   opt_alias data_type agg_name function_name
 %type <ival>      opt_distinct opt_asc_desc join_kind before_after trigger_event quantifier_kw opt_on_delete opt_union_all
 %type <constraints> col_constraints
 %type <slist>     trigger_body trigger_stmts
@@ -285,6 +300,40 @@ statement:
           cv->materialized = true;
           st->create_view = cv; $$ = st;
       }
+    | CREATE FUNCTION IDENTIFIER '(' opt_func_param_list ')' RETURNS data_type AS STRING_LITERAL {
+        auto st = new Statement(); st->type = StmtType::ST_CREATE_FUNCTION;
+        auto fn = std::make_shared<CreateFunctionStmt>();
+        fn->function_name = take_str($3);
+        for (int i = 0; i < $5.count; i++) {
+          FunctionParamDef param;
+          param.name = take_str($5.names[i]);
+          param.data_type = take_str($5.types[i]);
+          fn->params.push_back(std::move(param));
+        }
+        if ($5.names) free($5.names);
+        if ($5.types) free($5.types);
+        fn->return_type = take_str($8);
+        fn->body_sql = take_str($10);
+        st->create_function = fn;
+        $$ = st;
+      }
+    | CREATE FUNCTION IDENTIFIER '(' opt_func_param_list ')' RETURNS data_type AS expr {
+        auto st = new Statement(); st->type = StmtType::ST_CREATE_FUNCTION;
+        auto fn = std::make_shared<CreateFunctionStmt>();
+        fn->function_name = take_str($3);
+        for (int i = 0; i < $5.count; i++) {
+          FunctionParamDef param;
+          param.name = take_str($5.names[i]);
+          param.data_type = take_str($5.types[i]);
+          fn->params.push_back(std::move(param));
+        }
+        if ($5.names) free($5.names);
+        if ($5.types) free($5.types);
+        fn->return_type = take_str($8);
+        fn->body_expr = wrap($10);
+        st->create_function = fn;
+        $$ = st;
+      }
     | INSERT INTO IDENTIFIER VALUES insert_rows {
           auto st = new Statement(); st->type = StmtType::ST_INSERT;
           auto ins = std::make_shared<InsertStmt>();
@@ -397,6 +446,10 @@ statement:
     | DROP VIEW IDENTIFIER {
           auto st = new Statement(); st->type = StmtType::ST_DROP_VIEW;
           st->drop_name = take_str($3); $$ = st;
+      }
+    | DROP FUNCTION IDENTIFIER {
+        auto st = new Statement(); st->type = StmtType::ST_DROP_FUNCTION;
+        st->drop_name = take_str($3); $$ = st;
       }
     | DROP TRIGGER IDENTIFIER {
           auto st = new Statement(); st->type = StmtType::ST_DROP_TRIGGER;
@@ -664,6 +717,22 @@ data_type:
     | TYPE_VARCHAR '(' INT_LITERAL ')' { $$ = strdup("VARCHAR"); }
     ;
 
+opt_func_param_list:
+      /* empty */ { $$ = make_fplist(); }
+    | func_param_list { $$ = $1; }
+    ;
+
+func_param_list:
+      IDENTIFIER data_type {
+          $$ = make_fplist();
+          fplist_push($$, $1, $2);
+      }
+    | func_param_list ',' IDENTIFIER data_type {
+          $$ = $1;
+          fplist_push($$, $3, $4);
+      }
+    ;
+
 expr_list:
       expr                  { $$ = make_elist(); elist_push($$, $1); }
     | expr_list ',' expr    { $$ = $1; elist_push($$, $3); }
@@ -813,24 +882,30 @@ expr_primary:
           auto e = new Expr(); e->type = ExprType::STAR;
           e->table_name = take_str($1); $$ = e;
       }
-    | IDENTIFIER {
-          auto e = new Expr(); e->type = ExprType::COLUMN_REF;
-          e->column_name = take_str($1); $$ = e;
-      }
-    | agg_name '(' expr ')' {
+        | function_name '(' ')' {
           auto e = new Expr(); e->type = ExprType::FUNC_CALL;
-          e->func_name = take_str($1); e->args.push_back(wrap($3)); $$ = e;
+          e->func_name = take_str($1); $$ = e;
       }
-    | agg_name '(' '*' ')' {
+        | function_name '(' expr_list ')' {
+          auto e = new Expr(); e->type = ExprType::FUNC_CALL;
+          e->func_name = take_str($1);
+          for (int i = 0; i < $3.count; i++) e->args.push_back(wrap($3.items[i]));
+          free($3.items); $$ = e;
+      }
+        | function_name '(' '*' ')' {
           auto e = new Expr(); e->type = ExprType::FUNC_CALL;
           e->func_name = take_str($1);
           auto star = new Expr(); star->type = ExprType::STAR;
           e->args.push_back(wrap(star)); $$ = e;
       }
-    | agg_name '(' DISTINCT expr ')' {
+        | function_name '(' DISTINCT expr ')' {
           auto e = new Expr(); e->type = ExprType::FUNC_CALL;
           e->func_name = take_str($1); e->distinct_func = true;
           e->args.push_back(wrap($4)); $$ = e;
+      }
+        | IDENTIFIER {
+          auto e = new Expr(); e->type = ExprType::COLUMN_REF;
+          e->column_name = take_str($1); $$ = e;
       }
     | CASE case_when_then_list opt_case_else END {
         auto e = new Expr(); e->type = ExprType::CASE_EXPR;
@@ -868,6 +943,11 @@ agg_name:
     | AVG   { $$ = strdup("AVG"); }
     | MIN   { $$ = strdup("MIN"); }
     | MAX   { $$ = strdup("MAX"); }
+    ;
+
+function_name:
+      IDENTIFIER { $$ = $1; }
+    | agg_name   { $$ = $1; }
     ;
 
 quantifier_kw:

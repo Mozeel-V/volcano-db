@@ -15,6 +15,7 @@
 #include "planner/planner.h"
 #include "optimizer/optimizer.h"
 #include "executor/executor.h"
+#include "executor/functions.h"
 #include "executor/view_support.h"
 #include "benchmark/benchmark.h"
 #include "storage/lock_manager.h"
@@ -56,6 +57,7 @@ static storage::Value dml_eval(const ast::ExprPtr& e, const storage::Table* tbl,
                 case ast::BinOp::OP_SUB: return storage::value_sub(lv, rv);
                 case ast::BinOp::OP_MUL: return storage::value_mul(lv, rv);
                 case ast::BinOp::OP_DIV: return storage::value_div(lv, rv);
+                case ast::BinOp::OP_LIKE: return (int64_t)(storage::value_like(lv, rv) ? 1 : 0);
                 default: return std::monostate{};
             }
         }
@@ -70,6 +72,19 @@ static storage::Value dml_eval(const ast::ExprPtr& e, const storage::Table* tbl,
                     if (std::holds_alternative<int64_t>(ov)) return -std::get<int64_t>(ov);
                     return -storage::value_to_double(ov);
                 }
+            }
+            return std::monostate{};
+        }
+        case ast::ExprType::FUNC_CALL: {
+            std::vector<storage::Value> args;
+            args.reserve(e->args.size());
+            for (const auto& arg : e->args) {
+                args.push_back(dml_eval(arg, tbl, row));
+            }
+
+            storage::Value out;
+            if (executor::try_eval_builtin_function(e->func_name, args, out)) {
+                return out;
             }
             return std::monostate{};
         }
@@ -108,8 +123,8 @@ static planner::LogicalNodePtr last_explain_plan;
 static void print_help() {
     std::cout << R"(
 Simple Query Processor -- Commands:
-    SQL queries:      SELECT, CREATE TABLE, CREATE INDEX, CREATE VIEW, CREATE MATERIALIZED VIEW, INSERT, LOAD
-    Transactions:     BEGIN [TRANSACTION], COMMIT, ROLLBACK
+  SQL queries:      SELECT, CREATE TABLE, CREATE INDEX, CREATE VIEW, CREATE MATERIALIZED VIEW, CREATE FUNCTION, INSERT, LOAD
+  Transactions:     BEGIN [TRANSACTION], COMMIT, ROLLBACK
   EXPLAIN <query>   Show query plan (tree format)
   EXPLAIN ANALYZE <query>   Show plan + execution stats (per-node)
   EXPLAIN FORMAT DOT <query>  Show plan in Graphviz DOT format
@@ -117,6 +132,7 @@ Simple Query Processor -- Commands:
 
   Special commands:
     .help           Show this help
+    .functions      List built-in and user-defined functions
     .tables         List loaded tables
     .schema <tbl>   Show table schema
     .generate <n>   Generate sample data (n rows)
@@ -147,6 +163,59 @@ static std::string data_type_to_string(storage::DataType type) {
         case storage::DataType::VARCHAR: return "VARCHAR";
     }
     return "VARCHAR";
+}
+
+static storage::DataType parse_data_type_name(const std::string& raw_type) {
+    std::string type = raw_type;
+    std::transform(type.begin(), type.end(), type.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    if (type == "INT") return storage::DataType::INT;
+    if (type == "FLOAT") return storage::DataType::FLOAT;
+    return storage::DataType::VARCHAR;
+}
+
+static ast::ExprPtr parse_function_body_expression(const std::string& body_sql) {
+    auto parsed = ast::parse_sql("SELECT " + body_sql + " FROM __vdb_udf_dummy;");
+    if (!parsed || parsed->type != ast::StmtType::ST_SELECT || !parsed->select ||
+        parsed->select->select_list.size() != 1) {
+        throw std::runtime_error("Invalid function body expression: " + body_sql);
+    }
+    return parsed->select->select_list[0];
+}
+
+static void print_functions(const storage::Catalog& catalog) {
+    auto builtins = executor::list_builtin_scalar_function_names();
+    std::sort(builtins.begin(), builtins.end());
+    std::cout << "Built-in scalar functions (" << builtins.size() << "):\n";
+    for (const auto& fn : builtins) {
+        std::cout << "  - " << fn << "\n";
+    }
+
+    if (catalog.functions.empty()) {
+        std::cout << "User-defined SQL functions: (none)\n";
+        return;
+    }
+
+    std::vector<const storage::Catalog::FunctionDef*> user_functions;
+    user_functions.reserve(catalog.functions.size());
+    for (const auto& [_, def] : catalog.functions) {
+        user_functions.push_back(def.get());
+    }
+
+    std::sort(user_functions.begin(), user_functions.end(),
+              [](const storage::Catalog::FunctionDef* a, const storage::Catalog::FunctionDef* b) {
+                  return a->name < b->name;
+              });
+
+    std::cout << "User-defined SQL functions (" << user_functions.size() << "):\n";
+    for (const auto* fn : user_functions) {
+        std::cout << "  - " << fn->name << "(";
+        for (size_t i = 0; i < fn->params.size(); i++) {
+            if (i) std::cout << ", ";
+            std::cout << fn->params[i].name << " " << data_type_to_string(fn->params[i].type);
+        }
+        std::cout << ") RETURNS " << data_type_to_string(fn->return_type) << "\n";
+    }
 }
 
 static void write_table_dump(std::ostream& out, const storage::Table& tbl) {
@@ -424,6 +493,8 @@ static const char* statement_type_name(ast::StmtType type) {
         case ast::StmtType::ST_DROP_TABLE: return "DROP_TABLE";
         case ast::StmtType::ST_DROP_INDEX: return "DROP_INDEX";
         case ast::StmtType::ST_DROP_VIEW: return "DROP_VIEW";
+        case ast::StmtType::ST_CREATE_FUNCTION: return "CREATE_FUNCTION";
+        case ast::StmtType::ST_DROP_FUNCTION: return "DROP_FUNCTION";
         case ast::StmtType::ST_TRUNCATE: return "TRUNCATE";
         case ast::StmtType::ST_MERGE: return "MERGE";
         case ast::StmtType::ST_CREATE_TRIGGER: return "CREATE_TRIGGER";
@@ -479,6 +550,8 @@ static bool statement_mutates_catalog(ast::StmtType type) {
         case ast::StmtType::ST_DROP_TABLE:
         case ast::StmtType::ST_DROP_INDEX:
         case ast::StmtType::ST_DROP_VIEW:
+        case ast::StmtType::ST_CREATE_FUNCTION:
+        case ast::StmtType::ST_DROP_FUNCTION:
         case ast::StmtType::ST_TRUNCATE:
         case ast::StmtType::ST_MERGE:
         case ast::StmtType::ST_CREATE_TRIGGER:
@@ -561,9 +634,7 @@ static bool execute_sql(const std::string& sql,
                 for (auto& cd : ct.columns) {
                     storage::ColumnSchema cs;
                     cs.name = cd.name;
-                    cs.type = storage::DataType::VARCHAR;
-                    if (cd.data_type == "INT") cs.type = storage::DataType::INT;
-                    else if (cd.data_type == "FLOAT") cs.type = storage::DataType::FLOAT;
+                    cs.type = parse_data_type_name(cd.data_type);
                     cs.not_null = cd.not_null;
                     cs.primary_key = cd.primary_key;
                     cs.is_unique = cd.unique;
@@ -634,6 +705,39 @@ static bool execute_sql(const std::string& sql,
                     executor::cleanup_temporary_views(catalog, temp_tables);
                     throw;
                 }
+                break;
+            }
+            case ast::StmtType::ST_CREATE_FUNCTION: {
+                auto& cf = *stmt->create_function;
+                auto fn = std::make_shared<storage::Catalog::FunctionDef>();
+                fn->name = cf.function_name;
+                fn->return_type = parse_data_type_name(cf.return_type);
+
+                std::unordered_set<std::string> seen_params;
+                for (const auto& param : cf.params) {
+                    std::string normalized = param.name;
+                    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+                    if (!seen_params.insert(normalized).second) {
+                        throw std::runtime_error("Duplicate function parameter: " + param.name);
+                    }
+                    storage::Catalog::FunctionParam p;
+                    p.name = param.name;
+                    p.type = parse_data_type_name(param.data_type);
+                    fn->params.push_back(std::move(p));
+                }
+
+                if (cf.body_expr) {
+                    fn->body_expr = cf.body_expr;
+                } else {
+                    fn->body_expr = parse_function_body_expression(cf.body_sql);
+                }
+                if (!fn->body_expr) {
+                    throw std::runtime_error("Function body is empty for function: " + cf.function_name);
+                }
+
+                catalog.add_function(fn);
+                std::cout << "Function '" << cf.function_name << "' created.\n";
                 break;
             }
             case ast::StmtType::ST_INSERT: {
@@ -1217,6 +1321,14 @@ static bool execute_sql(const std::string& sql,
                     std::cout << "View '" << stmt->drop_name << "' dropped.\n";
                 break;
             }
+            case ast::StmtType::ST_DROP_FUNCTION: {
+                if (!catalog.drop_function(stmt->drop_name)) {
+                    std::cout << "Function not found: " << stmt->drop_name << "\n";
+                } else {
+                    std::cout << "Function '" << stmt->drop_name << "' dropped.\n";
+                }
+                break;
+            }
             case ast::StmtType::ST_TRUNCATE: {
                 auto* tbl = catalog.get_table(stmt->drop_name);
                 if (!tbl) { std::cout << "Table not found: " << stmt->drop_name << "\n"; break; }
@@ -1378,6 +1490,10 @@ static bool handle_dot_command(const std::string& line,
     if (line == ".quit" || line == ".exit") return false;
     if (line == ".help") {
         print_help();
+        return true;
+    }
+    if (line == ".functions") {
+        print_functions(catalog);
         return true;
     }
     if (line == ".tables") {

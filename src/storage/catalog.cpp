@@ -1,6 +1,17 @@
 #include "storage/storage.h"
 
+#include <cctype>
+#include <functional>
+#include <unordered_map>
+
 namespace storage {
+
+static std::string normalize_identifier_key(const std::string& name) {
+    std::string key = name;
+    std::transform(key.begin(), key.end(), key.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return key;
+}
 
 void Catalog::add_table(std::shared_ptr<Table> table) {
     tables[table->name] = table;
@@ -27,6 +38,31 @@ Catalog::ViewDef* Catalog::get_view(const std::string& name) {
 
 bool Catalog::has_view(const std::string& name) const {
     return views.find(name) != views.end();
+}
+
+void Catalog::add_function(std::shared_ptr<FunctionDef> fn) {
+    if (!fn) throw std::runtime_error("Function definition is null");
+    std::string key = normalize_identifier_key(fn->name);
+    if (functions.find(key) != functions.end()) {
+        throw std::runtime_error("Function already exists: " + fn->name);
+    }
+    functions[key] = std::move(fn);
+}
+
+Catalog::FunctionDef* Catalog::get_function(const std::string& name) {
+    auto it = functions.find(normalize_identifier_key(name));
+    if (it == functions.end()) return nullptr;
+    return it->second.get();
+}
+
+const Catalog::FunctionDef* Catalog::get_function(const std::string& name) const {
+    auto it = functions.find(normalize_identifier_key(name));
+    if (it == functions.end()) return nullptr;
+    return it->second.get();
+}
+
+bool Catalog::drop_function(const std::string& name) {
+    return functions.erase(normalize_identifier_key(name)) > 0;
 }
 
 void Catalog::create_index(const std::string& idx_name, const std::string& table_name,
@@ -340,6 +376,62 @@ Value value_div(const Value& a, const Value& b) {
     if (std::holds_alternative<int64_t>(a) && std::holds_alternative<int64_t>(b))
         return std::get<int64_t>(a) / std::get<int64_t>(b);
     return value_to_double(a) / denom;
+}
+
+bool like_pattern_match(const std::string& text, const std::string& pattern, char escape) {
+    std::unordered_map<uint64_t, bool> memo;
+
+    std::function<bool(size_t, size_t)> match = [&](size_t ti, size_t pi) -> bool {
+        uint64_t key = (static_cast<uint64_t>(ti) << 32) | static_cast<uint64_t>(pi);
+        auto it = memo.find(key);
+        if (it != memo.end()) return it->second;
+
+        bool result = false;
+        if (pi == pattern.size()) {
+            result = (ti == text.size());
+        } else {
+            char pc = pattern[pi];
+            if (pc == escape) {
+                if (pi + 1 < pattern.size()) {
+                    result = (ti < text.size() && text[ti] == pattern[pi + 1] && match(ti + 1, pi + 2));
+                } else {
+                    // Trailing escape character is treated as a literal escape.
+                    result = (ti < text.size() && text[ti] == escape && match(ti + 1, pi + 1));
+                }
+            } else if (pc == '%') {
+                size_t next_pi = pi;
+                while (next_pi + 1 < pattern.size() && pattern[next_pi + 1] == '%') {
+                    next_pi++;
+                }
+                next_pi++;
+
+                if (next_pi == pattern.size()) {
+                    result = true;
+                } else {
+                    for (size_t k = ti; k <= text.size(); k++) {
+                        if (match(k, next_pi)) {
+                            result = true;
+                            break;
+                        }
+                    }
+                }
+            } else if (pc == '_') {
+                result = (ti < text.size() && match(ti + 1, pi + 1));
+            } else {
+                result = (ti < text.size() && text[ti] == pc && match(ti + 1, pi + 1));
+            }
+        }
+
+        memo[key] = result;
+        return result;
+    };
+
+    return match(0, 0);
+}
+
+bool value_like(const Value& text, const Value& pattern, char escape) {
+    if (value_is_null(text) || value_is_null(pattern)) return false;
+    return like_pattern_match(value_to_string(text), value_to_string(pattern), escape);
 }
 
 std::string value_display(const Value& v) {

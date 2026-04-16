@@ -10,11 +10,11 @@ static void cleanup_durability_files() {
     std::remove("sqp.checkpoint");
 }
 
-// Cross-platform path to the sqp executable
+// Cross-platform path to the vdb executable
 #ifdef _WIN32
-#define SQP_EXE ".\\sqp.exe"
+#define SQP_EXE ".\\vdb.exe"
 #else
-#define SQP_EXE "./sqp"
+#define SQP_EXE "./vdb"
 #endif
 
 // We use this to run a shell command and capture its output
@@ -104,6 +104,21 @@ TEST_CASE("E2E: Unterminated SQL in file", "[e2e][commands]") {
     std::remove("unterminated.sql");
 }
 
+TEST_CASE("E2E: CREATE FUNCTION and DROP FUNCTION", "[e2e][commands][function]") {
+    std::string output = run_interactive(
+        "CREATE TABLE nums (n INT);\n"
+        "INSERT INTO nums VALUES (41);\n"
+        "CREATE FUNCTION add1(x INT) RETURNS INT AS 'x + 1';\n"
+        "SELECT add1(n) FROM nums;\n"
+        "DROP FUNCTION add1;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Function 'add1' created."));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("42"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Function 'add1' dropped."));
+}
+
 
 TEST_CASE("E2E: .help command", "[e2e][commands]") {
     std::string output = run_interactive(
@@ -113,6 +128,7 @@ TEST_CASE("E2E: .help command", "[e2e][commands]") {
 
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Simple Query Processor"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".help"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".functions"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".tables"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".schema"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".generate"));
@@ -120,6 +136,28 @@ TEST_CASE("E2E: .help command", "[e2e][commands]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".source"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".benchmark"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring(".quit"));
+}
+
+TEST_CASE("E2E: .functions lists built-ins", "[e2e][commands][function]") {
+    std::string output = run_interactive(
+        ".functions\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Built-in scalar functions"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("LOWER"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("User-defined SQL functions: (none)"));
+}
+
+TEST_CASE("E2E: .functions lists user-defined functions", "[e2e][commands][function]") {
+    std::string output = run_interactive(
+        "CREATE FUNCTION add1(x INT) RETURNS INT AS 'x + 1';\n"
+        ".functions\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("User-defined SQL functions (1):"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("add1(x INT) RETURNS INT"));
 }
 
 

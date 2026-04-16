@@ -43,6 +43,7 @@ set(LIB_SOURCES
     src/planner/physical_plan.cpp
     src/optimizer/rule_optimizer.cpp
     src/optimizer/cost_optimizer.cpp
+    src/executor/functions.cpp
     src/executor/executor.cpp
     src/executor/view_support.cpp
     src/executor/operators.cpp

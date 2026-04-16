@@ -103,6 +103,7 @@ ROLLBACK;
 | Command | Description |
 |---|---|
 | `.help` | Show help |
+| `.functions` | List built-in and user-defined SQL functions |
 | `.tables` | List loaded tables |
 | `.schema <table>` | Show table schema |
 | `.generate <n>` | Generate sample data with n employee rows |
@@ -154,6 +155,8 @@ src/
 │   └── cost_optimizer.cpp# Selectivity estimation, cost annotation, hash join selection
 ├── executor/         # Query execution engine
 │   ├── executor.h    #   ExecStats, ExecResult, execute()
+│   ├── functions.h   #   Scalar built-in function registry helpers
+│   ├── functions.cpp
 │   ├── executor.cpp  #   Expression evaluator + all operator implementations
 │   └── operators.cpp #   (Operator stubs)
 ├── benchmark/        # Performance benchmarking
@@ -165,11 +168,11 @@ src/
 
 ### Key components
 
-**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), predicate operators including `IN`, `NOT IN`, `EXISTS`, `NOT EXISTS`, and quantified subquery predicates (`SOME`/`ANY`, `ALL`), plus expression forms like `CASE WHEN ... THEN ... ELSE ... END`, and `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, `DROP TABLE/INDEX/VIEW`, `TRUNCATE`, `LOAD`, `EXPLAIN`, `BENCHMARK`, and transaction statements `BEGIN [TRANSACTION]`, `COMMIT`, `ROLLBACK`.
+**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), predicate operators including `IN`, `NOT IN`, `EXISTS`, `NOT EXISTS`, and quantified subquery predicates (`SOME`/`ANY`, `ALL`), plus expression forms like `CASE WHEN ... THEN ... ELSE ... END`, and `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `CREATE FUNCTION`, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, `DROP TABLE/INDEX/VIEW/FUNCTION`, `TRUNCATE`, `LOAD`, `EXPLAIN`, `BENCHMARK`, and transaction statements `BEGIN [TRANSACTION]`, `COMMIT`, `ROLLBACK`.
 
-**AST** (`ast::Expr`, `ast::SelectStmt`, `ast::Statement`) — Tree representation of parsed SQL. Expressions cover column refs, literals, binary/unary ops, function calls (aggregates), subqueries, `IN`/`NOT IN`, `EXISTS`/`NOT EXISTS`, quantified predicates (`SOME`/`ANY`, `ALL`), `BETWEEN`, `LIKE`, `CASE`.
+**AST** (`ast::Expr`, `ast::SelectStmt`, `ast::Statement`) — Tree representation of parsed SQL. Expressions cover column refs, literals, binary/unary ops, function calls (scalar, aggregate, and UDF invocations), subqueries, `IN`/`NOT IN`, `EXISTS`/`NOT EXISTS`, quantified predicates (`SOME`/`ANY`, `ALL`), `BETWEEN`, `LIKE`, `CASE`.
 
-**Storage** (`storage::Table`, `storage::Catalog`, `storage::HashIndex`) — In-memory row store. `Value` is a `std::variant<std::monostate, int64_t, double, std::string>`. The catalog manages tables and provides statistics (row counts, distinct values) for the cost optimizer.
+**Storage** (`storage::Table`, `storage::Catalog`, `storage::HashIndex`) — In-memory row store. `Value` is a `std::variant<std::monostate, int64_t, double, std::string>`. The catalog manages tables, views, SQL UDF definitions, and provides statistics (row counts, distinct values) for the cost optimizer.
 
 **Planner** (`planner::LogicalNode`) — Converts the AST into a tree of logical operators: `TABLE_SCAN`, `FILTER`, `PROJECTION`, `JOIN`, `AGGREGATION`, `SORT`, `LIMIT`, `DISTINCT`.
 
@@ -185,7 +188,7 @@ src/
 
 **Consistency hardening** — Catalog-level index integrity checks validate table/index synchronization after rollback and during/after recovery replay.
 
-**Executor** — Volcano-style pull-based execution. Implements sequential scan, filter, projection, nested-loop join, hash join, aggregation, sort, limit, and distinct operators. The expression evaluator handles all `BinOp`/`UnaryOp` types, NULL propagation, and string `LIKE` matching.
+**Executor** — Volcano-style pull-based execution. Implements sequential scan, filter, projection, nested-loop join, hash join, aggregation, sort, limit, and distinct operators. The expression evaluator handles all `BinOp`/`UnaryOp` types, NULL propagation, scalar built-ins, SQL UDF invocation, and SQL-style `LIKE` matching with `%`, `_`, and escaped wildcards.
 
 ## Supported SQL
 
@@ -204,6 +207,7 @@ CREATE TABLE <name> (<col> <type>, ...);
 CREATE INDEX <name> ON <table> (<col>) [USING HASH|BTREE];
 CREATE VIEW <name> AS <query>;
 CREATE MATERIALIZED VIEW <name> AS <query>;
+CREATE FUNCTION <name>(<param> <type>, ...) RETURNS <type> AS '<expr>';
 INSERT INTO <table> VALUES (...);
 UPDATE <table> SET <col> = <expr> [WHERE <condition>];
 DELETE FROM <table> [WHERE <condition>];
@@ -215,6 +219,7 @@ RENAME TABLE <old_name> TO <new_name>;  -- alias for ALTER TABLE ... RENAME TO
 DROP TABLE <table_name>;
 DROP INDEX <index_name>;
 DROP VIEW <view_name>;
+DROP FUNCTION <function_name>;
 TRUNCATE TABLE <table_name>;
 TRUNCATE <table_name>;                  -- shorthand (without TABLE keyword)
 LOAD <table> '<file.csv>';
@@ -228,7 +233,19 @@ ROLLBACK;
 -- Analysis
 EXPLAIN <query>;
 EXPLAIN ANALYZE <query>;
+
+-- Expressions
+LOWER(name), UPPER(name), LENGTH(name), TRIM(name), SUBSTR(name, 1, 3),
+ABS(x), ROUND(x), CEIL(x), FLOOR(x), COALESCE(a, b), NULLIF(a, b),
+custom_udf(col1, col2);
 ```
+
+### Functions and Pattern Matching
+
+- Scalar built-ins are supported in expression contexts (`SELECT`, `WHERE`, `ORDER BY`, `GROUP BY`): `LOWER`, `UPPER`, `LENGTH`, `TRIM`, `SUBSTR`, `ABS`, `ROUND`, `CEIL`/`CEILING`, `FLOOR`, `COALESCE`, `NULLIF`.
+- SQL UDF lifecycle is supported via `CREATE FUNCTION ... RETURNS ... AS ...` and `DROP FUNCTION`.
+- UDF resolution is name-based and currently expression-body focused (no statement-body UDFs).
+- `LIKE` supports SQL wildcards `%` and `_`, plus escaped literals (for example `LIKE 'a\_b'` and `LIKE 'a\%b'`).
 
 ### Transaction notes (current behavior)
 
@@ -298,7 +315,7 @@ Tag snapshot from `./vdb_tests --list-tags` (counts are per-tag and overlap acro
 
 | Area | Tag(s) | Cases |
 |------|--------|------:|
-| **Total suite** | `all` | **425** |
+| **Total suite** | `all` | **433** |
 | Parsing and grammar | `[parser]` | 104 |
 | End-to-end SQL | `[e2e]` | 239 |
 | CLI and scripts | `[commands]` | 23 |
@@ -323,6 +340,7 @@ Tag snapshot from `./vdb_tests --list-tags` (counts are per-tag and overlap acro
 - `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`
 - `CREATE TABLE` (INT, FLOAT, VARCHAR, VARCHAR(n), INTEGER, DOUBLE, TEXT)
 - `CREATE INDEX` (basic B-Tree, USING HASH, USING BTREE)
+- `CREATE FUNCTION name(param type, ...) RETURNS type AS 'expr'`
 - `INSERT INTO ... VALUES` (single row, multi-row, with column validation)
 - `UPDATE ... SET ... WHERE` (single/multi column SET, optional WHERE)
 - `DELETE FROM ... WHERE` (with or without WHERE clause)
@@ -333,6 +351,7 @@ Tag snapshot from `./vdb_tests --list-tags` (counts are per-tag and overlap acro
 - `DROP TABLE <name>` (cascades index removal)
 - `DROP INDEX <name>`
 - `DROP VIEW <name>`
+- `DROP FUNCTION <name>`
 - `TRUNCATE TABLE <name>` (clears rows, preserves table structure)
 - `TRUNCATE <name>` (shorthand without TABLE keyword)
 - `MERGE INTO ... USING ... ON ... WHEN MATCHED THEN UPDATE SET ... WHEN NOT MATCHED THEN INSERT VALUES ...` (upsert)
@@ -403,11 +422,12 @@ CREATE TABLE users (
 - Arithmetic: `+`, `-`, `*`, `/`, `%`
 - Comparison: `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`
 - Logical: `AND`, `OR`, `NOT`
-- Pattern: `LIKE` (prefix%, %suffix, %substring%, exact)
+- Pattern: `LIKE` (supports `%`, `_`, escaped wildcard literals, exact)
 - Range: `BETWEEN low AND high`
 - Set: `IN (list)`, `IN (subquery)`, `EXISTS (subquery)`
 - Unary: `-` negation, `IS NULL`, `IS NOT NULL`
 - Aggregate: `COUNT(*)`, `COUNT(col)`, `COUNT(DISTINCT col)`, `SUM`, `AVG`, `MIN`, `MAX`
+- Scalar function calls: `LOWER`, `UPPER`, `LENGTH`, `TRIM`, `SUBSTR`, `ABS`, `ROUND`, `CEIL`/`CEILING`, `FLOOR`, `COALESCE`, `NULLIF`, and user-defined SQL functions
 - Parenthesized expressions
 
 #### Case Insensitivity

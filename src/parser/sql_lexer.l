@@ -64,6 +64,8 @@ extern int yylineno;
 "TABLE"             { return TABLE; }
 "VIEW"              { return VIEW; }
 "MATERIALIZED"      { return MATERIALIZED; }
+"FUNCTION"          { return FUNCTION; }
+"RETURNS"           { return RETURNS; }
 "INDEX"             { return INDEX; }
 "USING"             { return USING; }
 "HASH"              { return HASH; }

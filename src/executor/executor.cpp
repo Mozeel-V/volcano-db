@@ -1,10 +1,12 @@
 #include "executor/executor.h"
+#include "executor/functions.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
 #include <functional>
 #include <cmath>
 #include <iostream>
+#include <stdexcept>
 
 namespace executor {
 
@@ -20,6 +22,7 @@ struct EvalCtx {
     const EvalCtx* outer = nullptr;
     mutable bool accessed_outer = false;
     ExecStats* stats = nullptr;
+    int udf_depth = 0;
 
     int find_col(const std::string& name) const {
         for (int i = (int)col_names.size() - 1; i >= 0; i--) {
@@ -121,26 +124,7 @@ static Value eval_expr(const ExprPtr& expr, const EvalCtx& ctx) {
                 case BinOp::OP_GTE: return (int64_t)((value_less(rv, lv) || value_equal(lv, rv)) ? 1 : 0);
                 case BinOp::OP_AND: return (int64_t)((value_to_int(lv) && value_to_int(rv)) ? 1 : 0);
                 case BinOp::OP_OR:  return (int64_t)((value_to_int(lv) || value_to_int(rv)) ? 1 : 0);
-                case BinOp::OP_LIKE: {
-                    // Simple LIKE: only handle % at start/end
-                    std::string sv = value_to_string(lv);
-                    std::string pat = value_to_string(rv);
-                    if (pat.empty()) return (int64_t)(sv.empty() ? 1 : 0);
-                    if (pat.front() == '%' && pat.back() == '%' && pat.size() > 2) {
-                        std::string mid = pat.substr(1, pat.size()-2);
-                        return (int64_t)(sv.find(mid) != std::string::npos ? 1 : 0);
-                    }
-                    if (pat.front() == '%') {
-                        std::string suffix = pat.substr(1);
-                        return (int64_t)(sv.size() >= suffix.size() &&
-                                sv.compare(sv.size()-suffix.size(), suffix.size(), suffix) == 0 ? 1 : 0);
-                    }
-                    if (pat.back() == '%') {
-                        std::string prefix = pat.substr(0, pat.size()-1);
-                        return (int64_t)(sv.compare(0, prefix.size(), prefix) == 0 ? 1 : 0);
-                    }
-                    return (int64_t)(sv == pat ? 1 : 0);
-                }
+                case BinOp::OP_LIKE: return (int64_t)(value_like(lv, rv) ? 1 : 0);
             }
             return std::monostate{};
         }
@@ -164,7 +148,55 @@ static Value eval_expr(const ExprPtr& expr, const EvalCtx& ctx) {
             int idx = ctx.find_col(fn_str);
             if (idx >= 0 && ctx.row && idx < (int)ctx.row->size())
                 return (*ctx.row)[idx];
-            return std::monostate{};
+
+            std::vector<Value> arg_values;
+            arg_values.reserve(expr->args.size());
+            for (const auto& arg : expr->args) {
+                arg_values.push_back(eval_expr(arg, ctx));
+            }
+
+            Value builtin_result;
+            if (try_eval_builtin_function(expr->func_name, arg_values, builtin_result)) {
+                return builtin_result;
+            }
+
+            if (ctx.catalog) {
+                const auto* udf = ctx.catalog->get_function(expr->func_name);
+                if (udf) {
+                    if (!udf->body_expr) {
+                        throw std::runtime_error("Function has no body: " + expr->func_name);
+                    }
+                    if (arg_values.size() != udf->params.size()) {
+                        throw std::runtime_error("Function " + normalize_function_name(expr->func_name) +
+                                                 " expects " + std::to_string(udf->params.size()) +
+                                                 " argument(s), got " + std::to_string(arg_values.size()));
+                    }
+                    if (ctx.udf_depth >= 16) {
+                        throw std::runtime_error("UDF recursion depth exceeded for function: " + expr->func_name);
+                    }
+
+                    Row udf_row;
+                    udf_row.reserve(arg_values.size());
+                    EvalCtx udf_ctx;
+                    udf_ctx.catalog = ctx.catalog;
+                    udf_ctx.stats = ctx.stats;
+                    udf_ctx.outer = nullptr;
+                    udf_ctx.udf_depth = ctx.udf_depth + 1;
+
+                    for (size_t i = 0; i < udf->params.size(); i++) {
+                        udf_ctx.col_names.push_back(udf->params[i].name);
+                        udf_row.push_back(arg_values[i]);
+                    }
+                    udf_ctx.row = &udf_row;
+                    return eval_expr(udf->body_expr, udf_ctx);
+                }
+            }
+
+            if (is_aggregate_function_name(expr->func_name)) {
+                return std::monostate{};
+            }
+
+            throw std::runtime_error("Unknown function: " + expr->func_name);
         }
         case ExprType::SUBQUERY: {
             if (!ctx.catalog || !expr->subquery) return std::monostate{};

@@ -241,6 +241,19 @@ struct MergeStmt {
     std::vector<std::vector<ExprPtr>> insert_values;                  // VALUES (...)
 };
 
+struct FunctionParamDef {
+    std::string name;
+    std::string data_type;
+};
+
+struct CreateFunctionStmt {
+    std::string function_name;
+    std::vector<FunctionParamDef> params;
+    std::string return_type;
+    ExprPtr body_expr;
+    std::string body_sql;
+};
+
 struct CreateTriggerStmt {
     std::string trigger_name;
     std::string table_name;
@@ -271,6 +284,8 @@ enum class StmtType {
     ST_DROP_TABLE,
     ST_DROP_INDEX,
     ST_DROP_VIEW,
+    ST_CREATE_FUNCTION,
+    ST_DROP_FUNCTION,
     ST_TRUNCATE,
     ST_MERGE,
     ST_CREATE_TRIGGER,
@@ -289,6 +304,7 @@ struct Statement {
     std::shared_ptr<LoadStmt> load;
     std::shared_ptr<AlterStmt> alter;
     std::shared_ptr<MergeStmt> merge;
+    std::shared_ptr<CreateFunctionStmt> create_function;
     std::shared_ptr<CreateTriggerStmt> create_trigger;
     std::string drop_name;  // name of table/index/view to drop, or table to truncate, or trigger to drop
     bool explain_analyze = false;
