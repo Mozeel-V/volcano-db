@@ -1,6 +1,6 @@
-# Simple Query Processor & Optimizer (SQP)
+# VolcanoDB
 
-A SQL query processor and optimizer built from scratch in C++17 using Flex and Bison. It parses SQL queries into an AST, converts them to logical plans, applies rule-based and cost-based optimizations, and executes them against an in-memory storage engine.
+VolcanoDB is a relational SQL engine built in C++17 with Flex and Bison. It parses SQL into an AST, builds logical and physical plans, applies rule-based and cost-based optimization, and executes queries with a Volcano-style engine over an in-memory storage layer with indexes, constraints, views, and triggers. It also provides ACID transaction support for DML using table-level locking, WAL-backed durability, checkpointing, and startup recovery.
 
 <p align="center">
     <a href="#prerequisites">Prerequisites</a> •
@@ -8,7 +8,7 @@ A SQL query processor and optimizer built from scratch in C++17 using Flex and B
     <a href="#running">Running</a> •
     <a href="#architecture">Architecture</a> •
     <a href="#supported-sql">Supported SQL</a> •
-    <a href="#sqp-test-suite-documentation">Testing</a>
+    <a href="#test-suite-documentation">Testing</a>
 </p>
 
 ## Prerequisites
@@ -38,12 +38,12 @@ cmake ..
 make
 ```
 
-This produces the `sqp` executable in the `build/` directory.
+This produces the `vdb` executable (VolcanoDB CLI) in the `build/` directory.
 
 ## Running
 
 ```bash
-./sqp
+./vdb
 ```
 
 This starts an interactive REPL. Type `.help` for a list of commands.
@@ -51,13 +51,13 @@ This starts an interactive REPL. Type `.help` for a list of commands.
 You can also execute commands from a SQL file:
 
 ```bash
-./sqp path/to/script.sql
+./vdb path/to/script.sql
 ```
 
 or
 
 ```bash
-./sqp --file path/to/script.sql
+./vdb --file path/to/script.sql
 ```
 
 ### Quick start
@@ -95,7 +95,7 @@ INSERT INTO employees VALUES (10001, 'Temp User', 'Engineering', 120000, 30);
 ROLLBACK;
 
 -- Save all current tables to a formatted text dump
-.save sqp_dump.txt
+.save volcanodb_dump.txt
 ```
 
 ### REPL commands
@@ -179,9 +179,11 @@ src/
 
 **Transactions** — `TransactionManager` maintains per-transaction undo records for row-level `INSERT`/`UPDATE`/`DELETE`/`MERGE` changes. `ROLLBACK` replays undo in reverse and rebuilds affected indexes. `COMMIT` clears undo records.
 
-**Isolation** — `LockManager` provides table-level shared/exclusive locks for explicit transactions. Write locks are held until `COMMIT`/`ROLLBACK`; read locks are statement-scoped.
+**Isolation** — `LockManager` provides table-level shared/exclusive locks for explicit transactions. Write locks are held until `COMMIT`/`ROLLBACK`; read locks are statement-scoped. Conflicts currently use deterministic immediate-abort behavior (no wait).
 
 **Durability** — `WalManager` appends transactional row-level WAL records (`BEGIN`/`INSERT`/`UPDATE`/`DELETE`/`COMMIT`/`ROLLBACK`), flushes WAL on `COMMIT` before acknowledgement, checkpoints catalog state, and performs startup recovery by redoing committed transactions after the last checkpoint.
+
+**Consistency hardening** — Catalog-level index integrity checks validate table/index synchronization after rollback and during/after recovery replay.
 
 **Executor** — Volcano-style pull-based execution. Implements sequential scan, filter, projection, nested-loop join, hash join, aggregation, sort, limit, and distinct operators. The expression evaluator handles all `BinOp`/`UnaryOp` types, NULL propagation, and string `LIKE` matching.
 
@@ -217,7 +219,7 @@ TRUNCATE TABLE <table_name>;
 TRUNCATE <table_name>;                  -- shorthand (without TABLE keyword)
 LOAD <table> '<file.csv>';
 
--- Transactions (MVP)
+-- Transactions
 BEGIN;
 BEGIN TRANSACTION;
 COMMIT;
@@ -230,24 +232,57 @@ EXPLAIN ANALYZE <query>;
 
 ### Transaction notes (current behavior)
 
-- In explicit transactions, SQP currently allows: `SELECT`, `EXPLAIN`, `BENCHMARK`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `COMMIT`, `ROLLBACK`.
-- DDL statements inside an active transaction are currently rejected.
+- In explicit transactions, VolcanoDB currently allows: `SELECT`, `EXPLAIN`, `BENCHMARK`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `COMMIT`, `ROLLBACK`.
+- Non-transactional mutating statements (for example DDL and `TRUNCATE`) are rejected inside active transactions.
 - WAL-based durability and startup recovery are enabled for explicit transaction writes.
+- Rollback and recovery paths include index consistency validation.
 
-## SQP Test Suite Documentation
+### ACID Compliance
 
-Exhaustive test suite for the Simple Query Processor & Optimizer (SQP) using **Catch2 v3**.
+VolcanoDB is **ACID compliant** for the implemented architecture and transaction model, based on the ACID evidence matrix tests (`[acid]`, `[acid-a]`, `[acid-c]`, `[acid-i]`, `[acid-d]`).
+
+### Assumptions and Limitations
+
+The ACID claim above assumes the following boundaries:
+
+1. Single-node, single-process deployment (no distributed transactions or replication).
+2. Isolation model is table-level locking with deterministic immediate-abort conflict policy.
+3. Explicit transactions are supported for DML (`INSERT`, `UPDATE`, `DELETE`, `MERGE`); DDL remains blocked inside active transactions.
+4. Durability is based on local WAL + checkpoint files and startup recovery for committed transactional writes.
+5. Full ANSI SERIALIZABLE/predicate-lock semantics are out of scope.
+
+### ACID Proof Suite
+
+Run the consolidated ACID evidence matrix:
+
+```bash
+./vdb_tests "[acid]"
+./vdb_tests "[acid-a]"
+./vdb_tests "[acid-c]"
+./vdb_tests "[acid-i]"
+./vdb_tests "[acid-d]"
+```
+
+For repeatability checks, run the matrix multiple times (for example 10 consecutive runs):
+
+```bash
+for i in {1..10}; do ./vdb_tests "[acid]" || break; done
+```
+
+## Test Suite Documentation
+
+Exhaustive test suite for VolcanoDB using **Catch2 v3**.
 
 ### Building & Running
 
 ```bash
 cd build
 cmake ..
-make sqp_tests
-./sqp_tests               # Run all tests
-./sqp_tests "[parser]"    # Run parser tests only
-./sqp_tests "[e2e]"       # Run end-to-end tests only
-./sqp_tests --list-tests  # List all test names
+make vdb_tests
+./vdb_tests               # Run all tests
+./vdb_tests "[parser]"    # Run parser tests only
+./vdb_tests "[e2e]"       # Run end-to-end tests only
+./vdb_tests --list-tests  # List all test names
 ```
 
 ### Test Organization
@@ -256,23 +291,27 @@ Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/tes
 
 | File | Primary focus | Representative tags |
 |------|---------------|---------------------|
-| `tests/test_main.cpp` | Parser, storage, planner/optimizer, executor internals, benchmark generators, WAL recovery | `[parser]`, `[storage]`, `[planner]`, `[optimizer]`, `[executor]`, `[benchmark]`, `[lock]`, `[wal]`, `[durability]` |
-| `tests/test_commands.cpp` | REPL/CLI behavior and end-to-end SQL workflows | `[e2e]`, `[commands]`, `[dml]`, `[ddl]`, `[alter]`, `[merge]`, `[constraint]`, `[trigger]`, `[transaction]`, `[durability]` |
+| `tests/test_main.cpp` | Parser, storage, planner/optimizer, executor internals, benchmark generators, WAL recovery, consistency and lock-isolation checks | `[parser]`, `[storage]`, `[planner]`, `[optimizer]`, `[executor]`, `[benchmark]`, `[lock]`, `[isolation]`, `[wal]`, `[durability]`, `[consistency]`, `[recovery]`, `[acid]` |
+| `tests/test_commands.cpp` | REPL/CLI behavior and end-to-end SQL workflows | `[e2e]`, `[commands]`, `[dml]`, `[ddl]`, `[alter]`, `[merge]`, `[constraint]`, `[trigger]`, `[transaction]`, `[durability]`, `[acid]` |
 
-Tag snapshot from `./sqp_tests --list-tags` (counts are per-tag and overlap across tests):
+Tag snapshot from `./vdb_tests --list-tags` (counts are per-tag and overlap across tests):
 
 | Area | Tag(s) | Cases |
 |------|--------|------:|
-| **Total suite** | `all` | **405** |
+| **Total suite** | `all` | **425** |
 | Parsing and grammar | `[parser]` | 104 |
-| End-to-end SQL | `[e2e]` | 229 |
+| End-to-end SQL | `[e2e]` | 239 |
 | CLI and scripts | `[commands]` | 23 |
-| Storage core | `[storage]` | 32 |
-| Indexing | `[index]` | 19 |
-| Transactions | `[transaction]` | 8 |
-| Locking | `[lock]` | 5 |
-| Durability and WAL | `[durability]`, `[wal]` | 3, 2 |
-| Constraints and foreign keys | `[constraint]`, `[fk]` | 25, 11 |
+| Storage core | `[storage]` | 38 |
+| Indexing | `[index]` | 21 |
+| ACID evidence matrix | `[acid]`, `[acid-a]`, `[acid-c]`, `[acid-i]`, `[acid-d]` | 19, 1, 3, 5, 11 |
+| Transactions | `[transaction]` | 19 |
+| Locking | `[lock]` | 10 |
+| Isolation conflict policy | `[isolation]` | 5 |
+| Durability and WAL | `[durability]`, `[wal]` | 11, 6 |
+| Recovery hardening | `[recovery]` | 3 |
+| Consistency hardening | `[consistency]` | 2 |
+| Constraints and foreign keys | `[constraint]`, `[fk]` | 26, 11 |
 | Planner, optimizer, executor | `[planner]`, `[optimizer]`, `[executor]` | 11, 8, 8 |
 | DML and DDL families | `[dml]`, `[ddl]`, `[alter]`, `[merge]` | 15, 28, 16, 5 |
 

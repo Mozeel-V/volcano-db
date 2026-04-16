@@ -53,8 +53,8 @@ set(LIB_SOURCES
 )
 
 # Main executable
-add_executable(sqp src/main.cpp ${LIB_SOURCES})
-target_compile_options(sqp PRIVATE -O2 -Wall)
+add_executable(vdb src/main.cpp ${LIB_SOURCES})
+target_compile_options(vdb PRIVATE -O2 -Wall)
 
 # ----- Tests (Catch2) -----
 # Try system-installed Catch2 first; fall back to downloading if not found
@@ -70,14 +70,14 @@ if(NOT Catch2_FOUND)
     FetchContent_MakeAvailable(Catch2)
 endif()
 
-add_executable(sqp_tests
+add_executable(vdb_tests
     tests/test_main.cpp
     tests/test_commands.cpp
     ${LIB_SOURCES}
 )
-target_link_libraries(sqp_tests PRIVATE Catch2::Catch2WithMain)
-target_compile_options(sqp_tests PRIVATE -O2 -Wall)
+target_link_libraries(vdb_tests PRIVATE Catch2::Catch2WithMain)
+target_compile_options(vdb_tests PRIVATE -O2 -Wall)
 
 include(CTest)
 include(Catch)
-catch_discover_tests(sqp_tests)
+catch_discover_tests(vdb_tests)

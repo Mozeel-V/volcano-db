@@ -159,6 +159,104 @@ bool Catalog::drop_index_by_name(const std::string& index_name) {
     return false;
 }
 
+bool Catalog::validate_table_indexes(const std::string& table_name, std::string* error_msg) const {
+    auto tbl_it = tables.find(table_name);
+    if (tbl_it == tables.end() || !tbl_it->second) {
+        if (error_msg) {
+            *error_msg = "Table not found while validating indexes: " + table_name;
+        }
+        return false;
+    }
+
+    const Table& tbl = *tbl_it->second;
+
+    for (const auto& [key, idx] : indexes) {
+        if (!idx || idx->table_name != table_name) continue;
+
+        try {
+            HashIndex expected;
+            expected.table_name = idx->table_name;
+            expected.column_name = idx->column_name;
+            expected.build(tbl);
+
+            if (expected.int_map != idx->int_map || expected.str_map != idx->str_map) {
+                if (error_msg) {
+                    *error_msg = "Hash index mismatch for key '" + key + "'";
+                }
+                return false;
+            }
+        } catch (const std::exception& e) {
+            if (error_msg) {
+                *error_msg = "Hash index validation error for key '" + key + "': " + e.what();
+            }
+            return false;
+        }
+    }
+
+    for (const auto& [key, idx] : btree_indexes) {
+        if (!idx || idx->table_name != table_name) continue;
+
+        try {
+            BTreeIndex expected;
+            expected.table_name = idx->table_name;
+            expected.column_name = idx->column_name;
+            expected.build(tbl);
+
+            if (expected.tree != idx->tree) {
+                if (error_msg) {
+                    *error_msg = "B-tree index mismatch for key '" + key + "'";
+                }
+                return false;
+            }
+        } catch (const std::exception& e) {
+            if (error_msg) {
+                *error_msg = "B-tree index validation error for key '" + key + "': " + e.what();
+            }
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool Catalog::validate_all_indexes(std::string* error_msg) const {
+    std::unordered_set<std::string> referenced_tables;
+
+    for (const auto& [key, idx] : indexes) {
+        if (!idx) continue;
+        referenced_tables.insert(idx->table_name);
+        if (tables.find(idx->table_name) == tables.end()) {
+            if (error_msg) {
+                *error_msg = "Hash index '" + key + "' references missing table '" + idx->table_name + "'";
+            }
+            return false;
+        }
+    }
+
+    for (const auto& [key, idx] : btree_indexes) {
+        if (!idx) continue;
+        referenced_tables.insert(idx->table_name);
+        if (tables.find(idx->table_name) == tables.end()) {
+            if (error_msg) {
+                *error_msg = "B-tree index '" + key + "' references missing table '" + idx->table_name + "'";
+            }
+            return false;
+        }
+    }
+
+    for (const auto& table_name : referenced_tables) {
+        std::string table_error;
+        if (!validate_table_indexes(table_name, &table_error)) {
+            if (error_msg) {
+                *error_msg = table_error;
+            }
+            return false;
+        }
+    }
+
+    return true;
+}
+
 size_t Catalog::table_cardinality(const std::string& name) const {
     auto it = tables.find(name);
     if (it == tables.end()) return 0;

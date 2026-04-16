@@ -6,6 +6,7 @@
 #include "ast/ast.h"
 #include "storage/storage.h"
 #include "storage/lock_manager.h"
+#include "storage/transaction.h"
 #include "storage/wal.h"
 #include "planner/planner.h"
 #include "optimizer/optimizer.h"
@@ -20,6 +21,7 @@
 #include <functional>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 
 //  parse_sql bridge same as in main.cpp
 extern int yyparse();
@@ -72,6 +74,18 @@ static void create_test_table(storage::Catalog& catalog) {
         {(int64_t)5, std::string("Eve"),     0.0,   std::string("Sales")},
     };
     catalog.add_table(tbl);
+}
+
+static void rebuild_indexes_for_table_for_tests(storage::Catalog& catalog, const std::string& table_name) {
+    auto* tbl = catalog.get_table(table_name);
+    REQUIRE(tbl != nullptr);
+
+    for (auto& [_, idx] : catalog.indexes) {
+        if (idx->table_name == table_name) idx->build(*tbl);
+    }
+    for (auto& [_, idx] : catalog.btree_indexes) {
+        if (idx->table_name == table_name) idx->build(*tbl);
+    }
 }
 
 static void create_join_tables(storage::Catalog& catalog) {
@@ -286,7 +300,7 @@ TEST_CASE("Parser: ROLLBACK statement", "[parser][transaction]") {
     REQUIRE(stmt->type == ast::StmtType::ST_ROLLBACK_TXN);
 }
 
-TEST_CASE("WAL: recovery replays committed row changes after checkpoint", "[wal][durability]") {
+TEST_CASE("WAL: recovery replays committed row changes after checkpoint", "[wal][durability][acid][acid-d]") {
     const std::string wal_path = "ut_wal_replay.wal";
     const std::string checkpoint_path = "ut_wal_replay.checkpoint";
     std::remove(wal_path.c_str());
@@ -323,7 +337,7 @@ TEST_CASE("WAL: recovery replays committed row changes after checkpoint", "[wal]
     std::remove(checkpoint_path.c_str());
 }
 
-TEST_CASE("WAL: recovery ignores uncommitted row changes", "[wal][durability]") {
+TEST_CASE("WAL: recovery ignores uncommitted row changes", "[wal][durability][acid][acid-d]") {
     const std::string wal_path = "ut_wal_uncommitted.wal";
     const std::string checkpoint_path = "ut_wal_uncommitted.checkpoint";
     std::remove(wal_path.c_str());
@@ -353,6 +367,261 @@ TEST_CASE("WAL: recovery ignores uncommitted row changes", "[wal][durability]") 
     CHECK(recovered_table->rows.empty());
     CHECK(stats.transactions_committed == 0);
     CHECK(stats.redo_records == 0);
+
+    std::remove(wal_path.c_str());
+    std::remove(checkpoint_path.c_str());
+}
+
+TEST_CASE("Consistency: rollback restores index-table invariants", "[storage][transaction][index][consistency][acid][acid-c]") {
+    storage::Catalog catalog;
+    auto tbl = std::make_shared<storage::Table>();
+    tbl->name = "tx_idx";
+    tbl->schema = {{"id", storage::DataType::INT}};
+    tbl->insert_row({(int64_t)1});
+    tbl->insert_row({(int64_t)2});
+    tbl->insert_row({(int64_t)3});
+    catalog.add_table(tbl);
+
+    catalog.create_index("idx_tx_idx_hash", "tx_idx", "id", true);
+    catalog.create_index("idx_tx_idx_btree", "tx_idx", "id", false);
+
+    storage::TransactionManager txn;
+    txn.begin();
+
+    // Insert inside transaction
+    tbl->rows.push_back(storage::Row{(int64_t)9});
+    size_t inserted_row_index = tbl->rows.size() - 1;
+    catalog.update_indexes_on_insert("tx_idx", inserted_row_index);
+    txn.log_insert("tx_idx", inserted_row_index);
+
+    // Update inside transaction
+    txn.log_update("tx_idx", 1, tbl->rows[1]);
+    tbl->rows[1][0] = (int64_t)20;
+    rebuild_indexes_for_table_for_tests(catalog, "tx_idx");
+
+    // Delete inside transaction
+    txn.log_delete("tx_idx", 0, tbl->rows[0]);
+    tbl->rows.erase(tbl->rows.begin());
+    rebuild_indexes_for_table_for_tests(catalog, "tx_idx");
+
+    txn.rollback(catalog);
+
+    REQUIRE(tbl->rows.size() == 3);
+    CHECK(as_int(tbl->rows[0][0]) == 1);
+    CHECK(as_int(tbl->rows[1][0]) == 2);
+    CHECK(as_int(tbl->rows[2][0]) == 3);
+
+    std::string index_error;
+    CHECK(catalog.validate_all_indexes(&index_error));
+    CHECK(index_error.empty());
+
+    auto* hash_idx = catalog.get_index("tx_idx", "id");
+    REQUIRE(hash_idx != nullptr);
+    CHECK(hash_idx->lookup_int(1).size() == 1);
+    CHECK(hash_idx->lookup_int(2).size() == 1);
+    CHECK(hash_idx->lookup_int(3).size() == 1);
+    CHECK(hash_idx->lookup_int(9).empty());
+
+    auto* btree_idx = catalog.get_btree_index("tx_idx", "id");
+    REQUIRE(btree_idx != nullptr);
+    CHECK(btree_idx->lookup_exact((int64_t)1).size() == 1);
+    CHECK(btree_idx->lookup_exact((int64_t)2).size() == 1);
+    CHECK(btree_idx->lookup_exact((int64_t)3).size() == 1);
+    CHECK(btree_idx->lookup_exact((int64_t)9).empty());
+}
+
+TEST_CASE("Consistency: WAL recovery preserves index-table invariants", "[wal][durability][index][consistency][acid][acid-c][acid-d]") {
+    const std::string wal_path = "ut_wal_index_recovery.wal";
+    const std::string checkpoint_path = "ut_wal_index_recovery.checkpoint";
+    std::remove(wal_path.c_str());
+    std::remove(checkpoint_path.c_str());
+
+    {
+        storage::Catalog catalog;
+        auto tbl = std::make_shared<storage::Table>();
+        tbl->name = "r";
+        tbl->schema = {{"id", storage::DataType::INT}};
+        tbl->insert_row({(int64_t)1});
+        tbl->insert_row({(int64_t)2});
+        catalog.add_table(tbl);
+
+        catalog.create_index("idx_r_hash", "r", "id", true);
+        catalog.create_index("idx_r_btree", "r", "id", false);
+
+        storage::WalManager wal(wal_path, checkpoint_path);
+        wal.checkpoint(catalog);
+
+        wal.log_begin(77);
+        wal.log_update(77, "r", 1, storage::Row{(int64_t)2}, storage::Row{(int64_t)22});
+        wal.log_insert(77, "r", 2, storage::Row{(int64_t)7});
+        wal.log_delete(77, "r", 0, storage::Row{(int64_t)1});
+        wal.log_commit(77);
+        wal.flush();
+    }
+
+    storage::Catalog recovered_catalog;
+    storage::WalManager wal_reader(wal_path, checkpoint_path);
+    auto stats = wal_reader.recover(recovered_catalog);
+
+    auto* recovered_table = recovered_catalog.get_table("r");
+    REQUIRE(recovered_table != nullptr);
+    REQUIRE(recovered_table->rows.size() == 2);
+    CHECK(as_int(recovered_table->rows[0][0]) == 22);
+    CHECK(as_int(recovered_table->rows[1][0]) == 7);
+    CHECK(stats.transactions_committed == 1);
+
+    std::string index_error;
+    CHECK(recovered_catalog.validate_all_indexes(&index_error));
+    CHECK(index_error.empty());
+
+    auto* hash_idx = recovered_catalog.get_index("r", "id");
+    REQUIRE(hash_idx != nullptr);
+    CHECK(hash_idx->lookup_int(22).size() == 1);
+    CHECK(hash_idx->lookup_int(7).size() == 1);
+    CHECK(hash_idx->lookup_int(1).empty());
+
+    auto* btree_idx = recovered_catalog.get_btree_index("r", "id");
+    REQUIRE(btree_idx != nullptr);
+    CHECK(btree_idx->lookup_exact((int64_t)22).size() == 1);
+    CHECK(btree_idx->lookup_exact((int64_t)7).size() == 1);
+    CHECK(btree_idx->lookup_exact((int64_t)1).empty());
+
+    std::remove(wal_path.c_str());
+    std::remove(checkpoint_path.c_str());
+}
+
+TEST_CASE("WAL: recovery tolerates malformed trailing record", "[wal][durability][recovery][acid][acid-d]") {
+    const std::string wal_path = "ut_wal_truncated_tail.wal";
+    const std::string checkpoint_path = "ut_wal_truncated_tail.checkpoint";
+    std::remove(wal_path.c_str());
+    std::remove(checkpoint_path.c_str());
+
+    {
+        storage::Catalog catalog;
+        auto tbl = std::make_shared<storage::Table>();
+        tbl->name = "tail";
+        tbl->schema = {{"id", storage::DataType::INT}};
+        catalog.add_table(tbl);
+
+        storage::WalManager wal(wal_path, checkpoint_path);
+        wal.checkpoint(catalog);
+
+        wal.log_begin(5);
+        wal.log_insert(5, "tail", 0, storage::Row{(int64_t)55});
+        wal.log_commit(5);
+        wal.flush();
+    }
+
+    {
+        std::ofstream out(wal_path, std::ios::out | std::ios::app);
+        REQUIRE(out.is_open());
+        out << "999 UPDATE 777 \"tail\" 0 broken_row_payload\n";
+    }
+
+    storage::Catalog recovered_catalog;
+    storage::WalManager wal_reader(wal_path, checkpoint_path);
+    auto stats = wal_reader.recover(recovered_catalog);
+
+    auto* recovered_table = recovered_catalog.get_table("tail");
+    REQUIRE(recovered_table != nullptr);
+    REQUIRE(recovered_table->rows.size() == 1);
+    CHECK(as_int(recovered_table->rows[0][0]) == 55);
+    CHECK(stats.transactions_committed == 1);
+    CHECK(stats.redo_records == 1);
+
+    std::remove(wal_path.c_str());
+    std::remove(checkpoint_path.c_str());
+}
+
+TEST_CASE("WAL: recovery replays post-checkpoint committed transaction", "[wal][durability][recovery][acid][acid-d]") {
+    const std::string wal_path = "ut_wal_post_checkpoint_commit.wal";
+    const std::string checkpoint_path = "ut_wal_post_checkpoint_commit.checkpoint";
+    std::remove(wal_path.c_str());
+    std::remove(checkpoint_path.c_str());
+
+    {
+        storage::Catalog catalog;
+        auto tbl = std::make_shared<storage::Table>();
+        tbl->name = "cp";
+        tbl->schema = {{"id", storage::DataType::INT}};
+        tbl->insert_row({(int64_t)1});
+        catalog.add_table(tbl);
+
+        storage::WalManager wal(wal_path, checkpoint_path);
+
+        // Baseline checkpoint snapshot: [1]
+        wal.checkpoint(catalog);
+
+        // Txn 10 committed, then checkpoint snapshot now includes [1,10]
+        wal.log_begin(10);
+        wal.log_insert(10, "cp", 1, storage::Row{(int64_t)10});
+        wal.log_commit(10);
+        wal.flush();
+        tbl->rows.push_back(storage::Row{(int64_t)10});
+        wal.checkpoint(catalog);
+
+        // Txn 11 committed after last checkpoint; recovery must replay this one
+        wal.log_begin(11);
+        wal.log_insert(11, "cp", 2, storage::Row{(int64_t)11});
+        wal.log_commit(11);
+        wal.flush();
+    }
+
+    storage::Catalog recovered_catalog;
+    storage::WalManager wal_reader(wal_path, checkpoint_path);
+    auto stats = wal_reader.recover(recovered_catalog);
+
+    auto* recovered_table = recovered_catalog.get_table("cp");
+    REQUIRE(recovered_table != nullptr);
+    REQUIRE(recovered_table->rows.size() == 3);
+    CHECK(as_int(recovered_table->rows[0][0]) == 1);
+    CHECK(as_int(recovered_table->rows[1][0]) == 10);
+    CHECK(as_int(recovered_table->rows[2][0]) == 11);
+    CHECK(stats.transactions_committed == 1);
+    CHECK(stats.redo_records == 1);
+    CHECK(stats.checkpoint_loaded == true);
+
+    std::remove(wal_path.c_str());
+    std::remove(checkpoint_path.c_str());
+}
+
+TEST_CASE("WAL: recovery replays post-checkpoint committed update and delete", "[wal][durability][recovery][acid][acid-d]") {
+    const std::string wal_path = "ut_wal_post_checkpoint_update_delete.wal";
+    const std::string checkpoint_path = "ut_wal_post_checkpoint_update_delete.checkpoint";
+    std::remove(wal_path.c_str());
+    std::remove(checkpoint_path.c_str());
+
+    {
+        storage::Catalog catalog;
+        auto tbl = std::make_shared<storage::Table>();
+        tbl->name = "cp_ud";
+        tbl->schema = {{"id", storage::DataType::INT}};
+        tbl->insert_row({(int64_t)1});
+        tbl->insert_row({(int64_t)2});
+        tbl->insert_row({(int64_t)3});
+        catalog.add_table(tbl);
+
+        storage::WalManager wal(wal_path, checkpoint_path);
+        wal.checkpoint(catalog);
+
+        wal.log_begin(21);
+        wal.log_update(21, "cp_ud", 1, storage::Row{(int64_t)2}, storage::Row{(int64_t)20});
+        wal.log_delete(21, "cp_ud", 2, storage::Row{(int64_t)3});
+        wal.log_commit(21);
+        wal.flush();
+    }
+
+    storage::Catalog recovered_catalog;
+    storage::WalManager wal_reader(wal_path, checkpoint_path);
+    auto stats = wal_reader.recover(recovered_catalog);
+
+    auto* recovered_table = recovered_catalog.get_table("cp_ud");
+    REQUIRE(recovered_table != nullptr);
+    REQUIRE(recovered_table->rows.size() == 2);
+    CHECK(as_int(recovered_table->rows[0][0]) == 1);
+    CHECK(as_int(recovered_table->rows[1][0]) == 20);
+    CHECK(stats.transactions_committed == 1);
+    CHECK(stats.redo_records == 2);
 
     std::remove(wal_path.c_str());
     std::remove(checkpoint_path.c_str());
@@ -1249,6 +1518,80 @@ TEST_CASE("Storage: LockManager release_all clears write locks", "[storage][lock
     lm.acquire_exclusive("departments", 20);
     lm.release_all(20);
     REQUIRE_NOTHROW(lm.acquire_shared("departments", 21));
+}
+
+TEST_CASE("Storage: LockManager exclusive conflict reports stable blocker details", "[storage][lock][isolation][acid][acid-i]") {
+    storage::LockManager lm;
+    lm.acquire_shared("employees", 1);
+
+    try {
+        lm.acquire_exclusive("employees", 2);
+        FAIL("Expected lock conflict");
+    } catch (const std::runtime_error& e) {
+        const std::string msg = e.what();
+        CHECK_THAT(msg, Catch::Matchers::ContainsSubstring("txn 2 requested EXCLUSIVE"));
+        CHECK_THAT(msg, Catch::Matchers::ContainsSubstring("SHARED is held by txn 1"));
+        CHECK_THAT(msg, Catch::Matchers::ContainsSubstring("immediate abort, no wait"));
+    }
+}
+
+TEST_CASE("Storage: LockManager shared conflict reports stable blocker details", "[storage][lock][isolation][acid][acid-i]") {
+    storage::LockManager lm;
+    lm.acquire_exclusive("orders", 9);
+
+    try {
+        lm.acquire_shared("orders", 10);
+        FAIL("Expected lock conflict");
+    } catch (const std::runtime_error& e) {
+        const std::string msg = e.what();
+        CHECK_THAT(msg, Catch::Matchers::ContainsSubstring("txn 10 requested SHARED"));
+        CHECK_THAT(msg, Catch::Matchers::ContainsSubstring("EXCLUSIVE is held by txn 9"));
+        CHECK_THAT(msg, Catch::Matchers::ContainsSubstring("immediate abort, no wait"));
+    }
+}
+
+TEST_CASE("Storage: LockManager chooses deterministic blocker among multiple shared holders", "[storage][lock][isolation][acid][acid-i]") {
+    storage::LockManager lm;
+    lm.acquire_shared("employees", 11);
+    lm.acquire_shared("employees", 3);
+    lm.acquire_shared("employees", 7);
+
+    try {
+        lm.acquire_exclusive("employees", 20);
+        FAIL("Expected lock conflict");
+    } catch (const std::runtime_error& e) {
+        const std::string msg = e.what();
+        CHECK_THAT(msg, Catch::Matchers::ContainsSubstring("txn 20 requested EXCLUSIVE"));
+        CHECK_THAT(msg, Catch::Matchers::ContainsSubstring("SHARED is held by txn 3"));
+    }
+}
+
+TEST_CASE("Storage: LockManager upgrade conflict ignores requester as blocker", "[storage][lock][isolation][acid][acid-i]") {
+    storage::LockManager lm;
+    lm.acquire_shared("orders", 5);
+    lm.acquire_shared("orders", 2);
+
+    try {
+        lm.acquire_exclusive("orders", 5);
+        FAIL("Expected lock conflict");
+    } catch (const std::runtime_error& e) {
+        const std::string msg = e.what();
+        CHECK_THAT(msg, Catch::Matchers::ContainsSubstring("txn 5 requested EXCLUSIVE"));
+        CHECK_THAT(msg, Catch::Matchers::ContainsSubstring("SHARED is held by txn 2"));
+    }
+
+    lm.release_all(2);
+    REQUIRE_NOTHROW(lm.acquire_exclusive("orders", 5));
+}
+
+TEST_CASE("Storage: LockManager failed acquisition leaves lock state clean", "[storage][lock][isolation][acid][acid-i]") {
+    storage::LockManager lm;
+    lm.acquire_shared("departments", 1);
+
+    REQUIRE_THROWS(lm.acquire_exclusive("departments", 2));
+
+    lm.release_all(1);
+    REQUIRE_NOTHROW(lm.acquire_exclusive("departments", 2));
 }
 
 // Storage -- Hash Index

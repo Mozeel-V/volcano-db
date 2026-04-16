@@ -73,6 +73,11 @@ void TransactionManager::rollback(Catalog& catalog) {
 
     for (const auto& table_name : touched_tables) {
         rebuild_indexes_for_table(catalog, table_name);
+
+        std::string index_error;
+        if (!catalog.validate_table_indexes(table_name, &index_error)) {
+            throw std::runtime_error("Index consistency check failed after rollback: " + index_error);
+        }
     }
 
     ctx_.undo_log.clear();

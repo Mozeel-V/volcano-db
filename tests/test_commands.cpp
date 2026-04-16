@@ -1548,7 +1548,7 @@ TEST_CASE("E2E: EXISTS Subquery", "[e2e][subquery]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Engineering"));
 }
 
-TEST_CASE("E2E: Transaction rollback restores pre-BEGIN state", "[e2e][transaction]") {
+TEST_CASE("E2E: Transaction rollback restores pre-BEGIN state", "[e2e][transaction][acid][acid-a]") {
     std::string output = run_interactive(
         "CREATE TABLE tx_roll (id INT);\n"
         "INSERT INTO tx_roll VALUES (111);\n"
@@ -1588,10 +1588,84 @@ TEST_CASE("E2E: DDL blocked in active transaction (MVP)", "[e2e][transaction]") 
         ".quit\n"
     );
 
-    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("statement not allowed in active transaction"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("is not allowed in active transaction"));
 }
 
-TEST_CASE("E2E: Committed transaction survives restart", "[e2e][transaction][durability]") {
+TEST_CASE("E2E: COMMIT without active transaction errors", "[e2e][transaction]") {
+    std::string output = run_interactive(
+        "COMMIT;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("No active transaction"));
+}
+
+TEST_CASE("E2E: ROLLBACK without active transaction errors", "[e2e][transaction]") {
+    std::string output = run_interactive(
+        "ROLLBACK;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("No active transaction"));
+}
+
+TEST_CASE("E2E: Nested BEGIN is rejected", "[e2e][transaction]") {
+    std::string output = run_interactive(
+        "BEGIN;\n"
+        "BEGIN;\n"
+        "ROLLBACK;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Transaction already active"));
+}
+
+TEST_CASE("E2E: TRUNCATE blocked in active transaction", "[e2e][transaction]") {
+    std::string output = run_interactive(
+        "CREATE TABLE tx_trunc (id INT);\n"
+        "INSERT INTO tx_trunc VALUES (999);\n"
+        "BEGIN;\n"
+        "TRUNCATE TABLE tx_trunc;\n"
+        "ROLLBACK;\n"
+        "SELECT * FROM tx_trunc;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("statement 'TRUNCATE' is not allowed in active transaction"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("999"));
+}
+
+TEST_CASE("E2E: DROP TABLE blocked in active transaction", "[e2e][transaction]") {
+    std::string output = run_interactive(
+        "CREATE TABLE tx_drop (id INT);\n"
+        "BEGIN;\n"
+        "DROP TABLE tx_drop;\n"
+        "ROLLBACK;\n"
+        "SELECT * FROM tx_drop;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("statement 'DROP_TABLE' is not allowed in active transaction"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(0 rows)"));
+}
+
+TEST_CASE("E2E: Constraint violation inside transaction can be rolled back cleanly", "[e2e][transaction][constraint][acid][acid-c]") {
+    std::string output = run_interactive(
+        "CREATE TABLE tx_cons (id INT UNIQUE);\n"
+        "BEGIN;\n"
+        "INSERT INTO tx_cons VALUES (1);\n"
+        "INSERT INTO tx_cons VALUES (1);\n"
+        "ROLLBACK;\n"
+        "SELECT * FROM tx_cons WHERE id = 1;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("UNIQUE constraint violated"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Transaction rolled back."));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(0 rows)"));
+}
+
+TEST_CASE("E2E: Committed transaction survives restart", "[e2e][transaction][durability][acid][acid-d]") {
     cleanup_durability_files();
 
     std::string run1 = run_interactive(
@@ -1610,6 +1684,111 @@ TEST_CASE("E2E: Committed transaction survives restart", "[e2e][transaction][dur
         true
     );
     CHECK_THAT(run2, Catch::Matchers::ContainsSubstring("777"));
+
+    cleanup_durability_files();
+}
+
+TEST_CASE("E2E: Committed UPDATE survives restart", "[e2e][transaction][durability][acid][acid-d]") {
+    cleanup_durability_files();
+
+    std::string run1 = run_interactive(
+        "CREATE TABLE tx_upd (id INT, v INT);\n"
+        "INSERT INTO tx_upd VALUES (1, 10);\n"
+        "BEGIN;\n"
+        "UPDATE tx_upd SET v = 99 WHERE id = 1;\n"
+        "COMMIT;\n"
+        ".quit\n",
+        true
+    );
+    CHECK_THAT(run1, Catch::Matchers::ContainsSubstring("Transaction committed."));
+
+    std::string run2 = run_interactive(
+        "SELECT * FROM tx_upd WHERE id = 1 AND v = 99;\n"
+        "SELECT * FROM tx_upd WHERE id = 1 AND v = 10;\n"
+        ".quit\n",
+        true
+    );
+    CHECK_THAT(run2, Catch::Matchers::ContainsSubstring("99"));
+    CHECK_THAT(run2, Catch::Matchers::ContainsSubstring("(0 rows)"));
+
+    cleanup_durability_files();
+}
+
+TEST_CASE("E2E: Committed DELETE survives restart", "[e2e][transaction][durability][acid][acid-d]") {
+    cleanup_durability_files();
+
+    std::string run1 = run_interactive(
+        "CREATE TABLE tx_del (id INT);\n"
+        "INSERT INTO tx_del VALUES (1);\n"
+        "INSERT INTO tx_del VALUES (2);\n"
+        "BEGIN;\n"
+        "DELETE FROM tx_del WHERE id = 2;\n"
+        "COMMIT;\n"
+        ".quit\n",
+        true
+    );
+    CHECK_THAT(run1, Catch::Matchers::ContainsSubstring("Transaction committed."));
+
+    std::string run2 = run_interactive(
+        "SELECT * FROM tx_del WHERE id = 2;\n"
+        "SELECT * FROM tx_del WHERE id = 1;\n"
+        ".quit\n",
+        true
+    );
+    CHECK_THAT(run2, Catch::Matchers::ContainsSubstring("(0 rows)"));
+    CHECK_THAT(run2, Catch::Matchers::ContainsSubstring("1"));
+
+    cleanup_durability_files();
+}
+
+TEST_CASE("E2E: Uncommitted transaction does not survive restart", "[e2e][transaction][durability][acid][acid-d]") {
+    cleanup_durability_files();
+
+    std::string run1 = run_interactive(
+        "CREATE TABLE tx_uncommitted (id INT);\n"
+        "BEGIN;\n"
+        "INSERT INTO tx_uncommitted VALUES (888);\n"
+        ".quit\n",
+        true
+    );
+    CHECK_THAT(run1, Catch::Matchers::ContainsSubstring("Transaction started"));
+
+    std::string run2 = run_interactive(
+        "SELECT * FROM tx_uncommitted WHERE id = 888;\n"
+        ".quit\n",
+        true
+    );
+    CHECK_THAT(run2, Catch::Matchers::ContainsSubstring("(0 rows)"));
+
+    cleanup_durability_files();
+}
+
+TEST_CASE("E2E: Committed MERGE survives restart", "[e2e][transaction][durability][merge][acid][acid-d]") {
+    cleanup_durability_files();
+
+    std::string run1 = run_interactive(
+        "CREATE TABLE tx_m_t (id INT, name VARCHAR);\n"
+        "INSERT INTO tx_m_t VALUES (1, 'Alice'), (2, 'Bob');\n"
+        "CREATE TABLE tx_m_s (id INT, name VARCHAR);\n"
+        "INSERT INTO tx_m_s VALUES (2, 'Bobby'), (3, 'Charlie');\n"
+        "BEGIN;\n"
+        "MERGE INTO tx_m_t USING tx_m_s ON tx_m_t.id = tx_m_s.id "
+        "WHEN MATCHED THEN UPDATE SET name = tx_m_s.name "
+        "WHEN NOT MATCHED THEN INSERT VALUES (3, 'Charlie');\n"
+        "COMMIT;\n"
+        ".quit\n",
+        true
+    );
+    CHECK_THAT(run1, Catch::Matchers::ContainsSubstring("Transaction committed."));
+
+    std::string run2 = run_interactive(
+        "SELECT * FROM tx_m_t WHERE id = 2 AND name = 'Bobby';\n"
+        "SELECT * FROM tx_m_t WHERE id = 3 AND name = 'Charlie';\n"
+        ".quit\n",
+        true
+    );
+    CHECK_THAT(run2, Catch::Matchers::ContainsSubstring("Bobby"));
+    CHECK_THAT(run2, Catch::Matchers::ContainsSubstring("Charlie"));
 
     cleanup_durability_files();
 }

@@ -10,6 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <unordered_set>
 
 namespace ast {
 struct SelectStmt;
@@ -155,6 +156,10 @@ public:
     // Drop helpers
     void remove_indexes_for_table(const std::string& table_name);
     bool drop_index_by_name(const std::string& index_name);
+
+    // Index integrity helpers (table rows <-> index structures)
+    bool validate_table_indexes(const std::string& table_name, std::string* error_msg = nullptr) const;
+    bool validate_all_indexes(std::string* error_msg = nullptr) const;
 
     // statistics
     size_t table_cardinality(const std::string& name) const;

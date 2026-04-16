@@ -401,15 +401,58 @@ static std::set<std::string> collect_tables_from_select(const ast::SelectStmt& s
     return tables;
 }
 
-static bool statement_allowed_in_transaction(ast::StmtType type) {
+static const char* statement_type_name(ast::StmtType type) {
     switch (type) {
-        case ast::StmtType::ST_SELECT:
-        case ast::StmtType::ST_EXPLAIN:
-        case ast::StmtType::ST_BENCHMARK:
+        case ast::StmtType::ST_SELECT: return "SELECT";
+        case ast::StmtType::ST_BEGIN_TXN: return "BEGIN";
+        case ast::StmtType::ST_COMMIT_TXN: return "COMMIT";
+        case ast::StmtType::ST_ROLLBACK_TXN: return "ROLLBACK";
+        case ast::StmtType::ST_CREATE_TABLE: return "CREATE_TABLE";
+        case ast::StmtType::ST_CREATE_INDEX: return "CREATE_INDEX";
+        case ast::StmtType::ST_CREATE_VIEW: return "CREATE_VIEW";
+        case ast::StmtType::ST_CREATE_MATERIALIZED_VIEW: return "CREATE_MATERIALIZED_VIEW";
+        case ast::StmtType::ST_INSERT: return "INSERT";
+        case ast::StmtType::ST_UPDATE: return "UPDATE";
+        case ast::StmtType::ST_DELETE: return "DELETE";
+        case ast::StmtType::ST_LOAD: return "LOAD";
+        case ast::StmtType::ST_EXPLAIN: return "EXPLAIN";
+        case ast::StmtType::ST_BENCHMARK: return "BENCHMARK";
+        case ast::StmtType::ST_ALTER_ADD_COL: return "ALTER_ADD_COLUMN";
+        case ast::StmtType::ST_ALTER_DROP_COL: return "ALTER_DROP_COLUMN";
+        case ast::StmtType::ST_ALTER_RENAME_COL: return "ALTER_RENAME_COLUMN";
+        case ast::StmtType::ST_ALTER_RENAME_TBL: return "ALTER_RENAME_TABLE";
+        case ast::StmtType::ST_DROP_TABLE: return "DROP_TABLE";
+        case ast::StmtType::ST_DROP_INDEX: return "DROP_INDEX";
+        case ast::StmtType::ST_DROP_VIEW: return "DROP_VIEW";
+        case ast::StmtType::ST_TRUNCATE: return "TRUNCATE";
+        case ast::StmtType::ST_MERGE: return "MERGE";
+        case ast::StmtType::ST_CREATE_TRIGGER: return "CREATE_TRIGGER";
+        case ast::StmtType::ST_DROP_TRIGGER: return "DROP_TRIGGER";
+        default: return "UNKNOWN";
+    }
+}
+
+static bool statement_is_transactional_write(ast::StmtType type) {
+    switch (type) {
         case ast::StmtType::ST_INSERT:
         case ast::StmtType::ST_UPDATE:
         case ast::StmtType::ST_DELETE:
         case ast::StmtType::ST_MERGE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool statement_allowed_in_transaction(ast::StmtType type) {
+    if (statement_is_transactional_write(type)) {
+        return true;
+    }
+
+    switch (type) {
+        case ast::StmtType::ST_SELECT:
+        case ast::StmtType::ST_EXPLAIN:
+        case ast::StmtType::ST_BENCHMARK:
         case ast::StmtType::ST_BEGIN_TXN:
         case ast::StmtType::ST_COMMIT_TXN:
         case ast::StmtType::ST_ROLLBACK_TXN:
@@ -472,7 +515,9 @@ static bool execute_sql(const std::string& sql,
     bool checkpoint_after_statement = false;
 
     if (txn_manager.in_transaction() && !statement_allowed_in_transaction(stmt->type)) {
-        std::cout << "Error: statement not allowed in active transaction (MVP supports SELECT/EXPLAIN/BENCHMARK and INSERT/UPDATE/DELETE/MERGE only)\n";
+        std::cout << "Error: statement '" << statement_type_name(stmt->type)
+                  << "' is not allowed in active transaction"
+                  << " (allowed: SELECT/EXPLAIN/BENCHMARK/INSERT/UPDATE/DELETE/MERGE/COMMIT/ROLLBACK).\n";
         return false;
     }
 

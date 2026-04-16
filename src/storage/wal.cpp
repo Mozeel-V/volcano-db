@@ -503,9 +503,19 @@ RecoveryStats WalManager::recover(Catalog& catalog) {
         }
         for (const auto& table_name : touched_tables) {
             rebuild_indexes_for_table(catalog, table_name);
+
+            std::string index_error;
+            if (!catalog.validate_table_indexes(table_name, &index_error)) {
+                throw std::runtime_error("Index consistency check failed during recovery: " + index_error);
+            }
         }
 
         stats.transactions_committed++;
+    }
+
+    std::string full_validation_error;
+    if (!catalog.validate_all_indexes(&full_validation_error)) {
+        throw std::runtime_error("Global index consistency check failed after recovery: " + full_validation_error);
     }
 
     load_next_lsn();
