@@ -251,6 +251,9 @@ struct CreateTriggerStmt {
 
 enum class StmtType {
     ST_SELECT,
+    ST_BEGIN_TXN,
+    ST_COMMIT_TXN,
+    ST_ROLLBACK_TXN,
     ST_CREATE_TABLE,
     ST_CREATE_INDEX,
     ST_CREATE_VIEW,

@@ -5,6 +5,11 @@
 #include <string>
 #include <cstdio>
 
+static void cleanup_durability_files() {
+    std::remove("sqp.wal");
+    std::remove("sqp.checkpoint");
+}
+
 // Cross-platform path to the sqp executable
 #ifdef _WIN32
 #define SQP_EXE ".\\sqp.exe"
@@ -13,7 +18,9 @@
 #endif
 
 // We use this to run a shell command and capture its output
-static std::string run_cmd(const std::string& cmd) {
+static std::string run_cmd(const std::string& cmd, bool preserve_state = false) {
+    if (!preserve_state) cleanup_durability_files();
+
     std::string result = "";
     std::string full_cmd = cmd + " > .test_out.tmp 2>&1";
     int ret = std::system(full_cmd.c_str());
@@ -24,15 +31,18 @@ static std::string run_cmd(const std::string& cmd) {
         result.assign(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
     }
     std::remove(".test_out.tmp");
+
+    if (!preserve_state) cleanup_durability_files();
+
     return result;
 }
 
 // We use this to write lines to a temp script, pipe into sqp, return output
-static std::string run_interactive(const std::string& commands) {
+static std::string run_interactive(const std::string& commands, bool preserve_state = false) {
     std::ofstream script(".cmd_test.sql");
     script << commands;
     script.close();
-    std::string output = run_cmd(std::string(SQP_EXE) + " < .cmd_test.sql");
+    std::string output = run_cmd(std::string(SQP_EXE) + " < .cmd_test.sql", preserve_state);
     std::remove(".cmd_test.sql");
     return output;
 }
@@ -1536,5 +1546,71 @@ TEST_CASE("E2E: EXISTS Subquery", "[e2e][subquery]") {
         ".quit\n"
     );
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Engineering"));
+}
+
+TEST_CASE("E2E: Transaction rollback restores pre-BEGIN state", "[e2e][transaction]") {
+    std::string output = run_interactive(
+        "CREATE TABLE tx_roll (id INT);\n"
+        "INSERT INTO tx_roll VALUES (111);\n"
+        "BEGIN;\n"
+        "INSERT INTO tx_roll VALUES (222);\n"
+        "UPDATE tx_roll SET id = 999 WHERE id = 111;\n"
+        "ROLLBACK;\n"
+        "SELECT * FROM tx_roll WHERE id = 222;\n"
+        "SELECT * FROM tx_roll WHERE id = 111;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Transaction rolled back."));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(0 rows)"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("111"));
+}
+
+TEST_CASE("E2E: Transaction commit keeps writes", "[e2e][transaction]") {
+    std::string output = run_interactive(
+        "CREATE TABLE tx_commit (id INT);\n"
+        "BEGIN;\n"
+        "INSERT INTO tx_commit VALUES (333);\n"
+        "COMMIT;\n"
+        "SELECT * FROM tx_commit WHERE id = 333;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Transaction committed."));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("333"));
+}
+
+TEST_CASE("E2E: DDL blocked in active transaction (MVP)", "[e2e][transaction]") {
+    std::string output = run_interactive(
+        "BEGIN;\n"
+        "CREATE TABLE tx_blocked (id INT);\n"
+        "ROLLBACK;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("statement not allowed in active transaction"));
+}
+
+TEST_CASE("E2E: Committed transaction survives restart", "[e2e][transaction][durability]") {
+    cleanup_durability_files();
+
+    std::string run1 = run_interactive(
+        "CREATE TABLE tx_durable (id INT);\n"
+        "BEGIN;\n"
+        "INSERT INTO tx_durable VALUES (777);\n"
+        "COMMIT;\n"
+        ".quit\n",
+        true
+    );
+    CHECK_THAT(run1, Catch::Matchers::ContainsSubstring("Transaction committed."));
+
+    std::string run2 = run_interactive(
+        "SELECT * FROM tx_durable WHERE id = 777;\n"
+        ".quit\n",
+        true
+    );
+    CHECK_THAT(run2, Catch::Matchers::ContainsSubstring("777"));
+
+    cleanup_durability_files();
 }
 

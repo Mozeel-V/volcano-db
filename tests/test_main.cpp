@@ -5,6 +5,8 @@
 
 #include "ast/ast.h"
 #include "storage/storage.h"
+#include "storage/lock_manager.h"
+#include "storage/wal.h"
 #include "planner/planner.h"
 #include "optimizer/optimizer.h"
 #include "executor/executor.h"
@@ -17,6 +19,7 @@
 #include <variant>
 #include <functional>
 #include <cmath>
+#include <cstdio>
 
 //  parse_sql bridge same as in main.cpp
 extern int yyparse();
@@ -257,6 +260,102 @@ TEST_CASE("Parser: FK default ON DELETE is RESTRICT", "[parser][ddl]") {
     auto& fk_col = stmt->create_table->columns[1];
     REQUIRE(fk_col.has_fk == true);
     CHECK(fk_col.fk_on_delete == ast::FkDeleteAction::RESTRICT);
+}
+
+TEST_CASE("Parser: BEGIN transaction statement", "[parser][transaction]") {
+    auto stmt = ast::parse_sql("BEGIN;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_BEGIN_TXN);
+}
+
+TEST_CASE("Parser: BEGIN TRANSACTION statement", "[parser][transaction]") {
+    auto stmt = ast::parse_sql("BEGIN TRANSACTION;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_BEGIN_TXN);
+}
+
+TEST_CASE("Parser: COMMIT statement", "[parser][transaction]") {
+    auto stmt = ast::parse_sql("COMMIT;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_COMMIT_TXN);
+}
+
+TEST_CASE("Parser: ROLLBACK statement", "[parser][transaction]") {
+    auto stmt = ast::parse_sql("ROLLBACK;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_ROLLBACK_TXN);
+}
+
+TEST_CASE("WAL: recovery replays committed row changes after checkpoint", "[wal][durability]") {
+    const std::string wal_path = "ut_wal_replay.wal";
+    const std::string checkpoint_path = "ut_wal_replay.checkpoint";
+    std::remove(wal_path.c_str());
+    std::remove(checkpoint_path.c_str());
+
+    {
+        storage::Catalog catalog;
+        auto tbl = std::make_shared<storage::Table>();
+        tbl->name = "w";
+        tbl->schema = {{"id", storage::DataType::INT}};
+        catalog.add_table(tbl);
+
+        storage::WalManager wal(wal_path, checkpoint_path);
+        wal.checkpoint(catalog);
+
+        wal.log_begin(1);
+        wal.log_insert(1, "w", 0, storage::Row{(int64_t)42});
+        wal.log_commit(1);
+        wal.flush();
+    }
+
+    storage::Catalog recovered_catalog;
+    storage::WalManager wal_reader(wal_path, checkpoint_path);
+    auto stats = wal_reader.recover(recovered_catalog);
+
+    auto* recovered_table = recovered_catalog.get_table("w");
+    REQUIRE(recovered_table != nullptr);
+    REQUIRE(recovered_table->rows.size() == 1);
+    CHECK(as_int(recovered_table->rows[0][0]) == 42);
+    CHECK(stats.transactions_committed == 1);
+    CHECK(stats.redo_records == 1);
+
+    std::remove(wal_path.c_str());
+    std::remove(checkpoint_path.c_str());
+}
+
+TEST_CASE("WAL: recovery ignores uncommitted row changes", "[wal][durability]") {
+    const std::string wal_path = "ut_wal_uncommitted.wal";
+    const std::string checkpoint_path = "ut_wal_uncommitted.checkpoint";
+    std::remove(wal_path.c_str());
+    std::remove(checkpoint_path.c_str());
+
+    {
+        storage::Catalog catalog;
+        auto tbl = std::make_shared<storage::Table>();
+        tbl->name = "w2";
+        tbl->schema = {{"id", storage::DataType::INT}};
+        catalog.add_table(tbl);
+
+        storage::WalManager wal(wal_path, checkpoint_path);
+        wal.checkpoint(catalog);
+
+        wal.log_begin(9);
+        wal.log_insert(9, "w2", 0, storage::Row{(int64_t)99});
+        wal.flush();
+    }
+
+    storage::Catalog recovered_catalog;
+    storage::WalManager wal_reader(wal_path, checkpoint_path);
+    auto stats = wal_reader.recover(recovered_catalog);
+
+    auto* recovered_table = recovered_catalog.get_table("w2");
+    REQUIRE(recovered_table != nullptr);
+    CHECK(recovered_table->rows.empty());
+    CHECK(stats.transactions_committed == 0);
+    CHECK(stats.redo_records == 0);
+
+    std::remove(wal_path.c_str());
+    std::remove(checkpoint_path.c_str());
 }
 
 // Select Statement Basics
@@ -1115,6 +1214,41 @@ TEST_CASE("Storage: Catalog add and get view", "[storage][catalog]") {
     REQUIRE(v != nullptr);
     CHECK(v->materialized == false);
     REQUIRE(v->query != nullptr);
+}
+
+TEST_CASE("Storage: LockManager shared locks coexist", "[storage][lock]") {
+    storage::LockManager lm;
+    REQUIRE_NOTHROW(lm.acquire_shared("employees", 1));
+    REQUIRE_NOTHROW(lm.acquire_shared("employees", 2));
+    REQUIRE_NOTHROW(lm.release_all(1));
+    REQUIRE_NOTHROW(lm.release_all(2));
+}
+
+TEST_CASE("Storage: LockManager exclusive conflicts with other shared holders", "[storage][lock]") {
+    storage::LockManager lm;
+    lm.acquire_shared("employees", 1);
+    REQUIRE_THROWS(lm.acquire_exclusive("employees", 2));
+}
+
+TEST_CASE("Storage: LockManager exclusive locks are reentrant for same txn", "[storage][lock]") {
+    storage::LockManager lm;
+    REQUIRE_NOTHROW(lm.acquire_exclusive("employees", 7));
+    REQUIRE_NOTHROW(lm.acquire_exclusive("employees", 7));
+    REQUIRE_NOTHROW(lm.release_all(7));
+}
+
+TEST_CASE("Storage: LockManager release_shared removes statement read lock", "[storage][lock]") {
+    storage::LockManager lm;
+    lm.acquire_shared("orders", 10);
+    lm.release_shared("orders", 10);
+    REQUIRE_NOTHROW(lm.acquire_exclusive("orders", 11));
+}
+
+TEST_CASE("Storage: LockManager release_all clears write locks", "[storage][lock]") {
+    storage::LockManager lm;
+    lm.acquire_exclusive("departments", 20);
+    lm.release_all(20);
+    REQUIRE_NOTHROW(lm.acquire_shared("departments", 21));
 }
 
 // Storage -- Hash Index

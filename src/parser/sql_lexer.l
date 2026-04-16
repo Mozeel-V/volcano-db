@@ -78,6 +78,9 @@ extern int yylineno;
 "EXPLAIN"           { return EXPLAIN; }
 "ANALYZE"           { return ANALYZE; }
 "BENCHMARK"         { return BENCHMARK_KW; }
+"COMMIT"            { return COMMIT_KW; }
+"ROLLBACK"          { return ROLLBACK_KW; }
+"TRANSACTION"       { return TRANSACTION_KW; }
 "COUNT"             { return COUNT; }
 "SUM"               { return SUM; }
 "AVG"               { return AVG; }

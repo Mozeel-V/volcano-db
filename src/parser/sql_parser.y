@@ -141,6 +141,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %token UNION INTERSECT EXCEPT ALL SOME ANY
 %token WITH CREATE TABLE VIEW MATERIALIZED INDEX USING HASH BTREE
 %token INSERT INTO VALUES LOAD EXPLAIN ANALYZE BENCHMARK_KW
+%token COMMIT_KW ROLLBACK_KW TRANSACTION_KW
 %token UPDATE SET DELETE_KW
 %token ALTER ADD COLUMN RENAME TO DROP TRUNCATE_KW
 %token MERGE MATCHED
@@ -193,6 +194,22 @@ statement:
       select_stmt {
           auto st = new Statement(); st->type = StmtType::ST_SELECT;
           st->select.reset($1); $$ = st;
+      }
+    | BEGIN_KW {
+          auto st = new Statement(); st->type = StmtType::ST_BEGIN_TXN;
+          $$ = st;
+      }
+    | BEGIN_KW TRANSACTION_KW {
+          auto st = new Statement(); st->type = StmtType::ST_BEGIN_TXN;
+          $$ = st;
+      }
+    | COMMIT_KW {
+          auto st = new Statement(); st->type = StmtType::ST_COMMIT_TXN;
+          $$ = st;
+      }
+    | ROLLBACK_KW {
+          auto st = new Statement(); st->type = StmtType::ST_ROLLBACK_TXN;
+          $$ = st;
       }
     | EXPLAIN select_stmt {
           auto st = new Statement(); st->type = StmtType::ST_EXPLAIN;

@@ -45,3 +45,4 @@ build/
 plan.*
 *.tex
 *.zip
+.vscode/

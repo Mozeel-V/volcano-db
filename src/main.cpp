@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <vector>
 #include <set>
+#include <cstdint>
 
 #include "ast/ast.h"
 #include "storage/storage.h"
@@ -16,6 +17,9 @@
 #include "executor/executor.h"
 #include "executor/view_support.h"
 #include "benchmark/benchmark.h"
+#include "storage/lock_manager.h"
+#include "storage/transaction.h"
+#include "storage/wal.h"
 #include <functional>
 
 static storage::Value dml_eval(const ast::ExprPtr& e, const storage::Table* tbl, const storage::Row& row) {
@@ -104,7 +108,8 @@ static planner::LogicalNodePtr last_explain_plan;
 static void print_help() {
     std::cout << R"(
 Simple Query Processor -- Commands:
-  SQL queries:      SELECT, CREATE TABLE, CREATE INDEX, CREATE VIEW, CREATE MATERIALIZED VIEW, INSERT, LOAD
+    SQL queries:      SELECT, CREATE TABLE, CREATE INDEX, CREATE VIEW, CREATE MATERIALIZED VIEW, INSERT, LOAD
+    Transactions:     BEGIN [TRANSACTION], COMMIT, ROLLBACK
   EXPLAIN <query>   Show query plan (tree format)
   EXPLAIN ANALYZE <query>   Show plan + execution stats (per-node)
   EXPLAIN FORMAT DOT <query>  Show plan in Graphviz DOT format
@@ -363,15 +368,147 @@ static void apply_delete_plan(storage::Catalog& catalog, const DeletePlan& plan)
     }
 }
 
-static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
+static void collect_tables_from_tref(const ast::TableRefPtr& tref, std::set<std::string>& out_tables) {
+    if (!tref) return;
+
+    switch (tref->type) {
+        case ast::TableRefType::BASE_TABLE:
+            if (!tref->table_name.empty()) out_tables.insert(tref->table_name);
+            break;
+        case ast::TableRefType::TRT_JOIN:
+            collect_tables_from_tref(tref->left, out_tables);
+            collect_tables_from_tref(tref->right, out_tables);
+            break;
+        case ast::TableRefType::TRT_SUBQUERY:
+            if (tref->subquery) {
+                for (const auto& sub_tref : tref->subquery->from_clause) {
+                    collect_tables_from_tref(sub_tref, out_tables);
+                }
+            }
+            break;
+    }
+}
+
+static std::set<std::string> collect_tables_from_select(const ast::SelectStmt& stmt) {
+    std::set<std::string> tables;
+    for (const auto& tref : stmt.from_clause) {
+        collect_tables_from_tref(tref, tables);
+    }
+    if (stmt.set_rhs) {
+        auto rhs_tables = collect_tables_from_select(*stmt.set_rhs);
+        tables.insert(rhs_tables.begin(), rhs_tables.end());
+    }
+    return tables;
+}
+
+static bool statement_allowed_in_transaction(ast::StmtType type) {
+    switch (type) {
+        case ast::StmtType::ST_SELECT:
+        case ast::StmtType::ST_EXPLAIN:
+        case ast::StmtType::ST_BENCHMARK:
+        case ast::StmtType::ST_INSERT:
+        case ast::StmtType::ST_UPDATE:
+        case ast::StmtType::ST_DELETE:
+        case ast::StmtType::ST_MERGE:
+        case ast::StmtType::ST_BEGIN_TXN:
+        case ast::StmtType::ST_COMMIT_TXN:
+        case ast::StmtType::ST_ROLLBACK_TXN:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool statement_mutates_catalog(ast::StmtType type) {
+    switch (type) {
+        case ast::StmtType::ST_CREATE_TABLE:
+        case ast::StmtType::ST_CREATE_INDEX:
+        case ast::StmtType::ST_CREATE_VIEW:
+        case ast::StmtType::ST_CREATE_MATERIALIZED_VIEW:
+        case ast::StmtType::ST_INSERT:
+        case ast::StmtType::ST_UPDATE:
+        case ast::StmtType::ST_DELETE:
+        case ast::StmtType::ST_LOAD:
+        case ast::StmtType::ST_ALTER_ADD_COL:
+        case ast::StmtType::ST_ALTER_DROP_COL:
+        case ast::StmtType::ST_ALTER_RENAME_COL:
+        case ast::StmtType::ST_ALTER_RENAME_TBL:
+        case ast::StmtType::ST_DROP_TABLE:
+        case ast::StmtType::ST_DROP_INDEX:
+        case ast::StmtType::ST_DROP_VIEW:
+        case ast::StmtType::ST_TRUNCATE:
+        case ast::StmtType::ST_MERGE:
+        case ast::StmtType::ST_CREATE_TRIGGER:
+        case ast::StmtType::ST_DROP_TRIGGER:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool execute_sql(const std::string& sql,
+                        storage::Catalog& catalog,
+                        storage::TransactionManager& txn_manager,
+                        storage::LockManager& lock_manager,
+                        storage::WalManager& wal_manager) {
     auto stmt = ast::parse_sql(sql);
     if (!stmt) {
         std::cout << "Error: failed to parse query\n";
         return false;
     }
 
+    const bool txn_active_for_locks = txn_manager.in_transaction();
+    const uint64_t lock_txn_id = txn_active_for_locks ? txn_manager.current_txn_id() : 0;
+    std::set<std::string> statement_shared_locks;
+
+    auto release_statement_read_locks = [&]() {
+        if (!txn_active_for_locks) return;
+        for (const auto& table_name : statement_shared_locks) {
+            lock_manager.release_shared(table_name, lock_txn_id);
+        }
+        statement_shared_locks.clear();
+    };
+
+    bool checkpoint_after_statement = false;
+
+    if (txn_manager.in_transaction() && !statement_allowed_in_transaction(stmt->type)) {
+        std::cout << "Error: statement not allowed in active transaction (MVP supports SELECT/EXPLAIN/BENCHMARK and INSERT/UPDATE/DELETE/MERGE only)\n";
+        return false;
+    }
+
     try {
         switch (stmt->type) {
+            case ast::StmtType::ST_BEGIN_TXN: {
+                txn_manager.begin();
+                wal_manager.log_begin(txn_manager.current_txn_id());
+                std::cout << "Transaction started (id=" << txn_manager.current_txn_id() << ").\n";
+                break;
+            }
+            case ast::StmtType::ST_COMMIT_TXN: {
+                if (!txn_manager.in_transaction()) {
+                    throw std::runtime_error("No active transaction");
+                }
+                uint64_t txn_id = txn_manager.current_txn_id();
+                wal_manager.log_commit(txn_id);
+                wal_manager.flush();
+                lock_manager.release_all(txn_id);
+                txn_manager.commit();
+                wal_manager.checkpoint(catalog);
+                std::cout << "Transaction committed.\n";
+                break;
+            }
+            case ast::StmtType::ST_ROLLBACK_TXN: {
+                if (!txn_manager.in_transaction()) {
+                    throw std::runtime_error("No active transaction");
+                }
+                uint64_t txn_id = txn_manager.current_txn_id();
+                wal_manager.log_rollback(txn_id);
+                wal_manager.flush();
+                lock_manager.release_all(txn_id);
+                txn_manager.rollback(catalog);
+                std::cout << "Transaction rolled back.\n";
+                break;
+            }
             case ast::StmtType::ST_CREATE_TABLE: {
                 auto& ct = *stmt->create_table;
                 auto tbl = std::make_shared<storage::Table>();
@@ -459,9 +596,15 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto* tbl = catalog.get_table(ins.table_name);
                 if (!tbl) throw std::runtime_error("Table not found: " + ins.table_name);
 
+                if (txn_active_for_locks) {
+                    lock_manager.acquire_exclusive(ins.table_name, lock_txn_id);
+                }
+
                 // We fire BEFORE INSERT triggers
                 for (auto* td : catalog.get_triggers(ins.table_name, storage::TriggerDef::ON_INSERT)) {
-                    if (td->when == storage::TriggerDef::BEFORE) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
+                    if (td->when == storage::TriggerDef::BEFORE) {
+                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+                    }
                 }
 
                 size_t inserted = 0;
@@ -522,13 +665,20 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     }
 
                     tbl->rows.push_back(std::move(row));
-                    catalog.update_indexes_on_insert(ins.table_name, tbl->rows.size() - 1);
+                    size_t inserted_row_index = tbl->rows.size() - 1;
+                    catalog.update_indexes_on_insert(ins.table_name, inserted_row_index);
+                    txn_manager.log_insert(ins.table_name, inserted_row_index);
+                    if (txn_manager.in_transaction()) {
+                        wal_manager.log_insert(txn_manager.current_txn_id(), ins.table_name, inserted_row_index, tbl->rows[inserted_row_index]);
+                    }
                     inserted++;
                 }
 
                 // We fire AFTER INSERT triggers
                 for (auto* td : catalog.get_triggers(ins.table_name, storage::TriggerDef::ON_INSERT)) {
-                    if (td->when == storage::TriggerDef::AFTER) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
+                    if (td->when == storage::TriggerDef::AFTER) {
+                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+                    }
                 }
 
                 std::cout << inserted << " row(s) inserted into '" << ins.table_name << "'.\n";
@@ -539,9 +689,15 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto* tbl = catalog.get_table(upd.table_name);
                 if (!tbl) throw std::runtime_error("Table not found: " + upd.table_name);
 
+                if (txn_active_for_locks) {
+                    lock_manager.acquire_exclusive(upd.table_name, lock_txn_id);
+                }
+
                 // We fire BEFORE UPDATE triggers
                 for (auto* td : catalog.get_triggers(upd.table_name, storage::TriggerDef::ON_UPDATE)) {
-                    if (td->when == storage::TriggerDef::BEFORE) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
+                    if (td->when == storage::TriggerDef::BEFORE) {
+                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+                    }
                 }
 
                 // We resolve column indices for assignments
@@ -560,6 +716,9 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                     auto& row = tbl->rows[ri];
                     if (upd.where_clause && !dml_eval_bool(upd.where_clause, tbl, row))
                         continue;
+
+                    storage::Row before_row = row;
+                    txn_manager.log_update(upd.table_name, ri, before_row);
 
                     // Apply assignments
                     for (auto& [idx, expr] : resolved) {
@@ -611,6 +770,10 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                         if (!found) throw std::runtime_error("Foreign key violation: value '" + storage::value_display(row[fk_idx]) + "' not found in " + fk.ref_table + "." + fk.ref_column);
                     }
 
+                    if (txn_manager.in_transaction()) {
+                        wal_manager.log_update(txn_manager.current_txn_id(), upd.table_name, ri, before_row, row);
+                    }
+
                     updated++;
                 }
 
@@ -624,7 +787,9 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
 
                 // We fire AFTER UPDATE triggers
                 for (auto* td : catalog.get_triggers(upd.table_name, storage::TriggerDef::ON_UPDATE)) {
-                    if (td->when == storage::TriggerDef::AFTER) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
+                    if (td->when == storage::TriggerDef::AFTER) {
+                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+                    }
                 }
 
                 std::cout << updated << " row(s) updated in '" << upd.table_name << "'.\n";
@@ -635,9 +800,15 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto* tbl = catalog.get_table(del.table_name);
                 if (!tbl) throw std::runtime_error("Table not found: " + del.table_name);
 
+                if (txn_active_for_locks) {
+                    lock_manager.acquire_exclusive(del.table_name, lock_txn_id);
+                }
+
                 // We fire BEFORE DELETE triggers
                 for (auto* td : catalog.get_triggers(del.table_name, storage::TriggerDef::ON_DELETE)) {
-                    if (td->when == storage::TriggerDef::BEFORE) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
+                    if (td->when == storage::TriggerDef::BEFORE) {
+                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+                    }
                 }
 
                 size_t before = tbl->rows.size();
@@ -651,13 +822,35 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
 
                 DeletePlan delete_plan;
                 collect_delete_plan(catalog, del.table_name, root_rows, delete_plan);
+
+                if (txn_active_for_locks) {
+                    for (const auto& [table_name, _] : delete_plan) {
+                        lock_manager.acquire_exclusive(table_name, lock_txn_id);
+                    }
+                }
+
+                for (const auto& [table_name, rows_to_delete] : delete_plan) {
+                    auto* del_tbl = catalog.get_table(table_name);
+                    if (!del_tbl) continue;
+                    for (size_t row_idx : rows_to_delete) {
+                        if (row_idx < del_tbl->rows.size()) {
+                            txn_manager.log_delete(table_name, row_idx, del_tbl->rows[row_idx]);
+                            if (txn_manager.in_transaction()) {
+                                wal_manager.log_delete(txn_manager.current_txn_id(), table_name, row_idx, del_tbl->rows[row_idx]);
+                            }
+                        }
+                    }
+                }
+
                 apply_delete_plan(catalog, delete_plan);
 
                 size_t deleted = before - tbl->rows.size();
 
                 // We fire AFTER DELETE triggers
                 for (auto* td : catalog.get_triggers(del.table_name, storage::TriggerDef::ON_DELETE)) {
-                    if (td->when == storage::TriggerDef::AFTER) for (auto& sql : td->action_sqls) execute_sql(sql, catalog);
+                    if (td->when == storage::TriggerDef::AFTER) {
+                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+                    }
                 }
 
                 std::cout << deleted << " row(s) deleted from '" << del.table_name << "'.\n";
@@ -675,6 +868,14 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 break;
             }
             case ast::StmtType::ST_EXPLAIN: {
+                if (txn_active_for_locks) {
+                    auto tables = collect_tables_from_select(*stmt->select);
+                    for (const auto& table_name : tables) {
+                        lock_manager.acquire_shared(table_name, lock_txn_id);
+                        statement_shared_locks.insert(table_name);
+                    }
+                }
+
                 std::vector<std::string> temp_tables;
                 executor::materialize_dynamic_views_for_select(*stmt->select, catalog, temp_tables);
 
@@ -725,11 +926,27 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 break;
             }
             case ast::StmtType::ST_SELECT: {
+                if (txn_active_for_locks) {
+                    auto tables = collect_tables_from_select(*stmt->select);
+                    for (const auto& table_name : tables) {
+                        lock_manager.acquire_shared(table_name, lock_txn_id);
+                        statement_shared_locks.insert(table_name);
+                    }
+                }
+
                 auto result = executor::execute_select_with_views(*stmt->select, catalog);
                 print_result(result, false);
                 break;
             }
             case ast::StmtType::ST_BENCHMARK: {
+                if (txn_active_for_locks) {
+                    auto tables = collect_tables_from_select(*stmt->select);
+                    for (const auto& table_name : tables) {
+                        lock_manager.acquire_shared(table_name, lock_txn_id);
+                        statement_shared_locks.insert(table_name);
+                    }
+                }
+
                 std::vector<std::string> temp_tables;
                 executor::materialize_dynamic_views_for_select(*stmt->select, catalog, temp_tables);
 
@@ -975,6 +1192,12 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 auto* source = catalog.get_table(mg.source_table);
                 if (!source) throw std::runtime_error("Source table not found: " + mg.source_table);
 
+                if (txn_active_for_locks) {
+                    lock_manager.acquire_exclusive(mg.target_table, lock_txn_id);
+                    lock_manager.acquire_shared(mg.source_table, lock_txn_id);
+                    statement_shared_locks.insert(mg.source_table);
+                }
+
                 // We resolve SET column indices on the target table
                 std::vector<std::pair<int, ast::ExprPtr>> resolved_set;
                 for (auto& [col, expr] : mg.update_assignments) {
@@ -1006,8 +1229,13 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
 
                         if (mg.on_condition && dml_eval_bool(mg.on_condition, &combined, combo)) {
                             // WHEN MATCHED -> UPDATE the target row
+                            storage::Row before_row = tgt_row;
+                            txn_manager.log_update(mg.target_table, ti, before_row);
                             for (auto& [idx, expr] : resolved_set) {
                                 tgt_row[idx] = dml_eval(expr, source, src_row);
+                            }
+                            if (txn_manager.in_transaction()) {
+                                wal_manager.log_update(txn_manager.current_txn_id(), mg.target_table, ti, before_row, tgt_row);
                             }
                             matched = true;
                             updated++;
@@ -1028,7 +1256,12 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                             new_row.push_back(dml_eval(e, source, src_row));
                         }
                         target->rows.push_back(std::move(new_row));
-                        catalog.update_indexes_on_insert(mg.target_table, target->rows.size() - 1);
+                        size_t inserted_row_index = target->rows.size() - 1;
+                        catalog.update_indexes_on_insert(mg.target_table, inserted_row_index);
+                        txn_manager.log_insert(mg.target_table, inserted_row_index);
+                        if (txn_manager.in_transaction()) {
+                            wal_manager.log_insert(txn_manager.current_txn_id(), mg.target_table, inserted_row_index, target->rows[inserted_row_index]);
+                        }
                         inserted++;
                     }
                 }
@@ -1068,16 +1301,35 @@ static bool execute_sql(const std::string& sql, storage::Catalog& catalog) {
                 break;
             }
         }
+
+        if (!txn_manager.in_transaction() && statement_mutates_catalog(stmt->type)) {
+            checkpoint_after_statement = true;
+        }
     } catch (const std::exception& e) {
+        release_statement_read_locks();
         std::cout << "Error: " << e.what() << "\n";
         return false;
     }
+
+    if (checkpoint_after_statement) {
+        wal_manager.checkpoint(catalog);
+    }
+
+    release_statement_read_locks();
     return true;
 }
 
-static bool run_script_file(const std::string& path, storage::Catalog& catalog);
+static bool run_script_file(const std::string& path,
+                            storage::Catalog& catalog,
+                            storage::TransactionManager& txn_manager,
+                                     storage::LockManager& lock_manager,
+                                     storage::WalManager& wal_manager);
 
-static bool handle_dot_command(const std::string& line, storage::Catalog& catalog) {
+static bool handle_dot_command(const std::string& line,
+                               storage::Catalog& catalog,
+                               storage::TransactionManager& txn_manager,
+                                         storage::LockManager& lock_manager,
+                                         storage::WalManager& wal_manager) {
     if (line == ".quit" || line == ".exit") return false;
     if (line == ".help") {
         print_help();
@@ -1170,7 +1422,7 @@ static bool handle_dot_command(const std::string& line, storage::Catalog& catalo
             std::cout << "Usage: .source <file.sql>\n";
             return true;
         }
-        return run_script_file(path, catalog);
+        return run_script_file(path, catalog, txn_manager, lock_manager, wal_manager);
     }
     if (line == ".benchmark") {
         if (catalog.tables.empty()) {
@@ -1187,6 +1439,9 @@ static bool handle_dot_command(const std::string& line, storage::Catalog& catalo
 
 static bool process_input_line(const std::string& raw_line,
                                storage::Catalog& catalog,
+                               storage::TransactionManager& txn_manager,
+                               storage::LockManager& lock_manager,
+                               storage::WalManager& wal_manager,
                                std::string& buffer,
                                bool is_interactive) {
     std::string line = trim_copy(raw_line);
@@ -1196,7 +1451,7 @@ static bool process_input_line(const std::string& raw_line,
     }
 
     if (line[0] == '.') {
-        bool keep_running = handle_dot_command(line, catalog);
+        bool keep_running = handle_dot_command(line, catalog, txn_manager, lock_manager, wal_manager);
         if (keep_running && is_interactive) std::cout << "sqp> ";
         return keep_running;
     }
@@ -1208,7 +1463,7 @@ static bool process_input_line(const std::string& raw_line,
         return true;
     }
 
-    bool success = execute_sql(buffer, catalog);
+    bool success = execute_sql(buffer, catalog, txn_manager, lock_manager, wal_manager);
     buffer.clear();
 
     // In script mode, stop on error; in interactive mode, continue
@@ -1218,7 +1473,11 @@ static bool process_input_line(const std::string& raw_line,
     return true;
 }
 
-static bool run_script_file(const std::string& path, storage::Catalog& catalog) {
+static bool run_script_file(const std::string& path,
+                            storage::Catalog& catalog,
+                            storage::TransactionManager& txn_manager,
+                            storage::LockManager& lock_manager,
+                            storage::WalManager& wal_manager) {
     std::ifstream script(path);
     if (!script.is_open()) {
         std::cout << "Error: could not open script file '" << path << "'\n";
@@ -1228,7 +1487,7 @@ static bool run_script_file(const std::string& path, storage::Catalog& catalog) 
     std::string line;
     std::string buffer;
     while (std::getline(script, line)) {
-        if (!process_input_line(line, catalog, buffer, false)) return false;
+        if (!process_input_line(line, catalog, txn_manager, lock_manager, wal_manager, buffer, false)) return false;
     }
 
     if (!trim_copy(buffer).empty()) {
@@ -1240,11 +1499,26 @@ static bool run_script_file(const std::string& path, storage::Catalog& catalog) 
 
 int main(int argc, char* argv[]) {
     storage::Catalog catalog;
+    storage::TransactionManager txn_manager;
+    storage::LockManager lock_manager;
+    storage::WalManager wal_manager;
+
+    auto recovery_stats = wal_manager.recover(catalog);
 
     std::cout << "|==================================================|\n";
     std::cout << "|     Simple Query Processor & Optimizer (SQP)     |\n";
     std::cout << "|       Type .help for available commands          |\n";
     std::cout << "|==================================================|\n\n";
+
+    if (recovery_stats.checkpoint_loaded || recovery_stats.records_scanned > 0) {
+        std::cout << "Recovery complete: "
+                  << recovery_stats.transactions_committed << " committed transaction(s), "
+                  << recovery_stats.redo_records << " redo record(s) applied";
+        if (recovery_stats.checkpoint_loaded) {
+            std::cout << " (checkpoint LSN " << recovery_stats.checkpoint_lsn << ")";
+        }
+        std::cout << ".\n\n";
+    }
 
     // If argument provided, run it as a script
     if (argc > 1) {
@@ -1262,12 +1536,12 @@ int main(int argc, char* argv[]) {
                 std::cout << "Usage: sqp --file <script.sql>\n";
                 return 1;
             }
-            run_script_file(argv[2], catalog);
+            run_script_file(argv[2], catalog, txn_manager, lock_manager, wal_manager);
             return 0;
         }
 
         // Treat a bare argument as a script file path.
-        run_script_file(arg, catalog);
+        run_script_file(arg, catalog, txn_manager, lock_manager, wal_manager);
         return 0;
     }
 
@@ -1276,7 +1550,7 @@ int main(int argc, char* argv[]) {
     std::cout << "sqp> ";
 
     while (std::getline(std::cin, line)) {
-        if (!process_input_line(line, catalog, buffer, true)) break;
+        if (!process_input_line(line, catalog, txn_manager, lock_manager, wal_manager, buffer, true)) break;
     }
 
     std::cout << "\nBye!\n";

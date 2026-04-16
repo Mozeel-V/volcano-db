@@ -36,6 +36,9 @@ set(LIB_SOURCES
     src/storage/table.cpp
     src/storage/catalog.cpp
     src/storage/index.cpp
+    src/storage/transaction.cpp
+    src/storage/lock_manager.cpp
+    src/storage/wal.cpp
     src/planner/logical_plan.cpp
     src/planner/physical_plan.cpp
     src/optimizer/rule_optimizer.cpp

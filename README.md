@@ -89,6 +89,11 @@ SELECT dept, COUNT(*) FROM employees GROUP BY dept;
 -- Run the built-in benchmark suite
 .benchmark
 
+-- Transactional writes (MVP)
+BEGIN;
+INSERT INTO employees VALUES (10001, 'Temp User', 'Engineering', 120000, 30);
+ROLLBACK;
+
 -- Save all current tables to a formatted text dump
 .save sqp_dump.txt
 ```
@@ -132,7 +137,13 @@ src/
 │   ├── storage.h     #   Table, HashIndex, Catalog, Value type definitions
 │   ├── table.cpp     #   Table operations (insert, load CSV, distinct values)
 │   ├── catalog.cpp   #   Catalog + value helper functions (comparison, arithmetic)
-│   └── index.cpp     #   Hash index build and lookup
+│   ├── index.cpp     #   Hash/B-tree index build and lookup
+│   ├── transaction.h #   Undo-log transaction manager (BEGIN/COMMIT/ROLLBACK)
+│   ├── transaction.cpp
+│   ├── lock_manager.h#   Table lock manager (shared/exclusive locks)
+│   ├── lock_manager.cpp
+│   ├── wal.h         #   Write-ahead log and recovery interfaces
+│   └── wal.cpp
 ├── planner/          # Query plan generation
 │   ├── planner.h     #   LogicalNode type, build_logical_plan() declaration
 │   ├── logical_plan.cpp  # AST → logical plan tree conversion
@@ -154,7 +165,7 @@ src/
 
 ### Key components
 
-**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), predicate operators including `IN`, `NOT IN`, `EXISTS`, `NOT EXISTS`, and quantified subquery predicates (`SOME`/`ANY`, `ALL`), plus expression forms like `CASE WHEN ... THEN ... ELSE ... END`, and `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, `DROP TABLE/INDEX/VIEW`, `TRUNCATE`, `LOAD`, `EXPLAIN`, and `BENCHMARK`.
+**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), predicate operators including `IN`, `NOT IN`, `EXISTS`, `NOT EXISTS`, and quantified subquery predicates (`SOME`/`ANY`, `ALL`), plus expression forms like `CASE WHEN ... THEN ... ELSE ... END`, and `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, `DROP TABLE/INDEX/VIEW`, `TRUNCATE`, `LOAD`, `EXPLAIN`, `BENCHMARK`, and transaction statements `BEGIN [TRANSACTION]`, `COMMIT`, `ROLLBACK`.
 
 **AST** (`ast::Expr`, `ast::SelectStmt`, `ast::Statement`) — Tree representation of parsed SQL. Expressions cover column refs, literals, binary/unary ops, function calls (aggregates), subqueries, `IN`/`NOT IN`, `EXISTS`/`NOT EXISTS`, quantified predicates (`SOME`/`ANY`, `ALL`), `BETWEEN`, `LIKE`, `CASE`.
 
@@ -165,6 +176,12 @@ src/
 **Optimizer** — Two-phase optimization:
 1. **Rule-based** (`optimize_rules`): Selection pushdown (push filters below joins/projections), projection pushdown.
 2. **Cost-based** (`optimize_cost`): Estimates selectivity and row counts, annotates cost on each node, selects hash join over nested-loop join when estimated comparisons exceed a threshold.
+
+**Transactions** — `TransactionManager` maintains per-transaction undo records for row-level `INSERT`/`UPDATE`/`DELETE`/`MERGE` changes. `ROLLBACK` replays undo in reverse and rebuilds affected indexes. `COMMIT` clears undo records.
+
+**Isolation** — `LockManager` provides table-level shared/exclusive locks for explicit transactions. Write locks are held until `COMMIT`/`ROLLBACK`; read locks are statement-scoped.
+
+**Durability** — `WalManager` appends transactional row-level WAL records (`BEGIN`/`INSERT`/`UPDATE`/`DELETE`/`COMMIT`/`ROLLBACK`), flushes WAL on `COMMIT` before acknowledgement, checkpoints catalog state, and performs startup recovery by redoing committed transactions after the last checkpoint.
 
 **Executor** — Volcano-style pull-based execution. Implements sequential scan, filter, projection, nested-loop join, hash join, aggregation, sort, limit, and distinct operators. The expression evaluator handles all `BinOp`/`UnaryOp` types, NULL propagation, and string `LIKE` matching.
 
@@ -200,10 +217,22 @@ TRUNCATE TABLE <table_name>;
 TRUNCATE <table_name>;                  -- shorthand (without TABLE keyword)
 LOAD <table> '<file.csv>';
 
+-- Transactions (MVP)
+BEGIN;
+BEGIN TRANSACTION;
+COMMIT;
+ROLLBACK;
+
 -- Analysis
 EXPLAIN <query>;
 EXPLAIN ANALYZE <query>;
 ```
+
+### Transaction notes (current behavior)
+
+- In explicit transactions, SQP currently allows: `SELECT`, `EXPLAIN`, `BENCHMARK`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `COMMIT`, `ROLLBACK`.
+- DDL statements inside an active transaction are currently rejected.
+- WAL-based durability and startup recovery are enabled for explicit transaction writes.
 
 ## SQP Test Suite Documentation
 
@@ -216,8 +245,8 @@ cd build
 cmake ..
 make sqp_tests
 ./sqp_tests               # Run all tests
-./sqp_tests -t "[parser]" # Run parser tests only
-./sqp_tests -t "[e2e]"    # Run end-to-end tests only
+./sqp_tests "[parser]"    # Run parser tests only
+./sqp_tests "[e2e]"       # Run end-to-end tests only
 ./sqp_tests --list-tests  # List all test names
 ```
 
@@ -225,80 +254,27 @@ make sqp_tests
 
 Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/test_commands.cpp` (CLI commands):
 
-| # | Section | Tag(s) | Count | Description |
-|---|---------|--------|-------|-------------|
-| 1 | Parser: DDL Statements | `[parser][ddl]` | 15 | CREATE TABLE (INT, FLOAT, VARCHAR, VARCHAR(n), INTEGER, DOUBLE, TEXT), CREATE INDEX (basic, USING HASH, USING BTREE), INSERT, LOAD, FK ON DELETE CASCADE/RESTRICT parsing
-| 2 | Parser: SELECT Basics | `[parser][select]` | 10 | SELECT *, specific columns, alias (AS / implicit), DISTINCT, table alias, UNION, UNION ALL, INTERSECT, EXCEPT
-| 3 | Parser: Expressions | `[parser][expr]` | 27 | Literals (int, float, string, NULL), arithmetic ops (+,-,*,/,%), comparisons (=,!=,<>,<,>,<=,>=), logical (AND, OR, NOT), IS NULL / IS NOT NULL, LIKE, BETWEEN, IN (list & subquery), NOT IN (subquery), EXISTS/NOT EXISTS, SOME/ANY/ALL quantified predicates, searched and simple CASE expressions (with and without ELSE), negation, parenthesized, qualified columns
-| 4 | Parser: Aggregate Functions | `[parser][aggregate]` | 4 | COUNT(*), COUNT(column), COUNT(DISTINCT col), SUM/AVG/MIN/MAX
-| 5 | Parser: Clauses | `[parser][clause]` | 8 | WHERE, GROUP BY, HAVING, ORDER BY (ASC default, DESC, multiple keys), LIMIT, LIMIT+OFFSET
-| 6 | Parser: JOIN Syntax | `[parser][join]` | 8 | INNER (implicit/explicit), LEFT, LEFT OUTER, RIGHT, FULL OUTER, CROSS, subquery in FROM
-| 7 | Parser: EXPLAIN / BENCHMARK | `[parser][explain]` | 3 | EXPLAIN SELECT, EXPLAIN ANALYZE SELECT, BENCHMARK SELECT
-| 8 | Case Insensitivity | `[parser][case]` | 12 | All lowercase, all uppercase, mixed case keywords, DDL keywords, aggregate names (count/COUNT/Count), JOIN keywords, ASC/DESC, EXPLAIN/ANALYZE, DISTINCT, IS NULL/IS NOT NULL, BETWEEN/LIKE/IN keywords, identifier case preservation
-| 9 | Punctuation & Grammar | `[parser][grammar]` | 11 | Semicolons, commas in SELECT/DDL, parenthesized expressions, dot notation, single-quoted strings, multiple FROM tables, precedence (*before+, AND before OR), parse failure returns nullptr, incomplete query error, single-line `--` comments, block `/* */` comments
-| 10 | Storage: Value Helpers | `[storage][value]` | 11 | value_is_null, value_to_int (truncation, null→0), value_to_double, value_to_string, value_equal (normal, NULL=NULL→false, NULL=x→false), value_less (normal, null→false, mixed int/float), value_add/sub/mul/div (int+int=int, int+float=float), arithmetic null propagation, division-by-zero→NULL, value_display formatting
-| 11 | Storage: Table Operations | `[storage][table]` | 4 | Table creation/schema, insert_row, distinct_values, cardinality
-| 12 | Storage: Catalog | `[storage][catalog]` | 3 | add/get table, cardinality/distinct stats
-| 13 | Storage: Hash Index | `[storage][index]` | 3 | Build+lookup int, build+lookup string, catalog create_index
-| 14 | E2E: SELECT * | `[e2e][select]` | 4 | SELECT *, specific columns, expression in select list, CASE expression in projection
-| 15 | E2E: WHERE Clause | `[e2e][where]` | 21 | Equality, string comparison, inequality (>), <=, AND, OR, NOT, !=, <>, BETWEEN, IN list, CASE predicate, NOT IN subquery, EXISTS/NOT EXISTS correlated predicates, SOME/ANY/ALL quantified subqueries, LIKE prefix%, LIKE %suffix, LIKE %substring%, LIKE exact
-| 16 | E2E: ORDER BY | `[e2e][orderby]` | 5 | ASC default, DESC, string column, multiple keys, CASE-based custom ordering
-| 17 | E2E: LIMIT/OFFSET | `[e2e][limit]` | 5 | Basic LIMIT, LIMIT+OFFSET, LIMIT > row count, OFFSET beyond rows, LIMIT 0
-| 18 | E2E: DISTINCT | `[e2e][distinct]` | 2 | DISTINCT on duplicates, DISTINCT on unique column
-| 19 | E2E: Aggregation | `[e2e][aggregation]` | 12 | COUNT(*), COUNT(col), SUM(int), AVG(float), MIN/MAX int, MIN/MAX string, GROUP BY+COUNT, GROUP BY+SUM, GROUP BY+multiple aggs, HAVING
-| 20 | E2E: Joins | `[e2e][join]` | 9 | INNER JOIN, JOIN with alias, JOIN+WHERE, CROSS JOIN, implicit cross join (multi-FROM), JOIN+aggregation
-| 21 | E2E: Arithmetic | `[e2e][arithmetic]` | 3 | Integer arithmetic in SELECT, float arithmetic, modulo
-| 22 | E2E: NULL Handling | `[e2e][null]` | 2 | IS NULL/IS NOT NULL filter, COUNT(*) vs COUNT(col) with NULL, SUM/AVG skip nulls, NULL=NULL→false
-| 23 | E2E: Combined Queries | `[e2e][combined]` | 5 | WHERE+ORDER+LIMIT, DISTINCT+ORDER, GROUP+HAVING+ORDER, JOIN+WHERE+ORDER+LIMIT, aggregate without GROUP BY
-| 24 | Planner: Structure | `[planner]` | 8 | Scan+projection, filter node, sort node, limit node, distinct node, join node, aggregation node
-| 25 | Optimizer: Rule-Based | `[optimizer][rules]` | 1 | Selection pushdown below join, optimization preserves results
-| 26 | Optimizer: Cost-Based | `[optimizer][cost]` | 2 | Cost estimates populated, hash join selection for large tables
-| 27 | Executor: Stats | `[executor][stats]` | 3 | rows_scanned/produced, filter stats, join comparisons
-| 28 | E2E: DDL+DML Pipeline | `[e2e][ddl]` | 2 | CREATE TABLE then query, CREATE INDEX then verify
-| 29 | E2E: Generated Data | `[e2e][benchmark]` | 1 | Scan employees, filter salary, group by dept, join emp+dept, complex compound query
-| 30 | Edge Cases | `[e2e][edge]` | 14 | Empty table, COUNT on empty, WHERE no match, single row, LIMIT 1, OFFSET not reaching LIMIT, very long strings, negative integers, zero comparisons, all-NULL column, single GROUP, identical rows DISTINCT, self-join, case-sensitive LIKE data
-| 31 | AST Factory Methods | `[ast]` | 9 | make_int/float/string/column/star/binary/unary/func, to_string
-| 32 | Planner: to_string | `[planner]` | 8 | Plan to_string, optimized plan to_string
-| 33 | String Literals | `[e2e][strings]` | 3 | Strings with spaces, empty string comparison, LIKE empty pattern
-| 34 | Subqueries | `[e2e][subquery]`, `[executor]` | 5 | IN subquery parse, FROM subquery parse, scalar evaluation, IN correlated nested loops, EXISTS/NOT EXISTS (uncorrelated/correlated), scalar correlated execution, correlation memoization, IN uncorrelated Hash Join |
-| 35 | EXPLAIN E2E | `[e2e][explain]` | 2 | EXPLAIN builds plan, EXPLAIN ANALYZE executes
-| 36 | Complex Join Patterns | `[e2e][join]` | 9 | JOIN+ORDER BY joined col, JOIN+LIMIT, JOIN+GROUP+HAVING
-| 37 | Float/Int Mixed Types | `[e2e][types]` | 2 | Float comparison in WHERE, int/float mixed arithmetic
-| 38 | Multiple Aggregates | `[e2e][aggregation]` | 12 | All aggregates in one query, GROUP BY+AVG
-| 39 | Benchmark Data | `[benchmark]` | 3 | generate_employees, generate_departments, generate_orders
-| 40 | Regression & Stress | `[e2e][regression]` `[e2e][stress]` | 9 | Nested AND/OR, aggregate+WHERE, ORDER+DISTINCT, BETWEEN boundaries, IN single, expression alias, JOIN+agg+order+limit, many columns, many WHERE conditions
-| 41 | Additional Tests | `[e2e][view]` | 2 | Generated | 
-| 42 | Additional Tests | `[optimizer]` | 1 | Generated | 
-| 43 | Additional Tests | `[parser][error]` | 2 | Generated | 
-| 44 | Additional Tests | `[planner][optimizer]` | 1 | Generated |
-| 45 | E2E: CLI Commands | `[e2e][commands]` | 22 | `.help`, `.tables` (empty/generated/created), `.schema` (valid/invalid), `.generate` (with/without arg), `.save` (create/overwrite/missing arg), `.benchmark` (empty/loaded), `.quit`, `.exit`, `.source` (valid/missing file/no arg), `--file` (valid/missing/no arg), bare arg as file, unknown command |
-| 46 | Index Integration | `[storage][index]` `[optimizer][index]` `[executor][index]` `[planner][index]` | 17 | BTreeIndex build/lookup/range/insert/string-keys, Catalog hash vs btree routing, index maintenance on insert, optimizer INDEX_SCAN rewrite (equality/range/no-index), executor correctness (hash eq, btree eq/range/lt), index vs full scan equivalence, planner to_string |
-| 47 | DML Operations | `[e2e][dml]` | 15 | INSERT (single/multi-row/mismatch/nonexistent/data-verify), UPDATE (single col/multi col/no WHERE/nonexistent), DELETE (WHERE/no WHERE/compound/no match/nonexistent), full DML sequence |
-| 48 | ALTER TABLE | `[e2e][alter]` | 16 | ADD COLUMN (NULL backfill + new insert), DROP COLUMN (schema+data), RENAME COLUMN (SELECT with new name), RENAME TABLE (success + old name gone), RENAME TABLE standalone (success + old name gone + error cases), error: duplicate column, nonexistent column, last column, existing table, nonexistent table, rename to existing name, index compatibility |
-| 49 | DROP TABLE/INDEX/VIEW | `[e2e][ddl]` | 6 | DROP TABLE (success + nonexistent error + index cascade), DROP INDEX (success + nonexistent), DROP VIEW (success + create+drop+verify gone + nonexistent) |
-| 50 | TRUNCATE | `[e2e][ddl]` | 5 | TRUNCATE TABLE (clears rows, table persists, insert after), TRUNCATE shorthand, TRUNCATE empty table, TRUNCATE nonexistent error, case insensitivity |
-| 51 | Script Error-Stop | `[e2e][error-stop]` | 3 | `--file` stops on syntax error (earlier commands execute, later don't), interactive REPL continues after error, `--file` stops on runtime error (nonexistent table) |
-| 52 | MERGE | `[e2e][merge]` | 5 | MERGE basic upsert (matched update + unmatched insert), update-only (all matched), insert-only (all unmatched), nonexistent source table error, case insensitivity |
-| 53 | Query Plan Visualization | `[e2e][explain]` `[e2e][commands]` | 4 | EXPLAIN tree connectors, EXPLAIN ANALYZE per-node actual stats, EXPLAIN FORMAT DOT (Graphviz), `.plan`/`.plan dot` commands |
-| 54 | Triggers | `[e2e][trigger]` | 6 | AFTER INSERT trigger fires, BEFORE DELETE trigger fires, DROP TRIGGER, nonexistent table error, case insensitivity, `.triggers` command |
-| 55 | Constraints | `[e2e][constraint]` | 14 | NOT NULL reject/allow, PK reject duplicate/null/auto-index, UNIQUE reject/allow-null, UPDATE NOT NULL/UNIQUE, CHECK reject/allow/update, case insensitivity, multiple constraints |
-| 56 | Foreign Keys | `[e2e][constraint][fk]` | 11 | FK rejects invalid INSERT, FK allows valid INSERT, FK rejects UPDATE to invalid, FK allows NULL, FK case insensitivity, ON DELETE CASCADE deletes children, ON DELETE RESTRICT blocks delete, default ON DELETE RESTRICT, mixed CASCADE+RESTRICT atomic behavior |
+| File | Primary focus | Representative tags |
+|------|---------------|---------------------|
+| `tests/test_main.cpp` | Parser, storage, planner/optimizer, executor internals, benchmark generators, WAL recovery | `[parser]`, `[storage]`, `[planner]`, `[optimizer]`, `[executor]`, `[benchmark]`, `[lock]`, `[wal]`, `[durability]` |
+| `tests/test_commands.cpp` | REPL/CLI behavior and end-to-end SQL workflows | `[e2e]`, `[commands]`, `[dml]`, `[ddl]`, `[alter]`, `[merge]`, `[constraint]`, `[trigger]`, `[transaction]`, `[durability]` |
 
-### Test Categories Summary
+Tag snapshot from `./sqp_tests --list-tags` (counts are per-tag and overlap across tests):
 
-| Category | Tests | Coverage |
-|----------|------:|----------|
-| Parsing & Grammar | 85 | SQL parsing, case insensitivity, punctuation, operator precedence, comments |
-| Storage & Indexes | 36 | Value ops, Table CRUD, Catalog, Hash/BTree indexes, integration |
-| Query Pipeline | 15 | Planner nodes, optimizer rules, executor stats |
-| End-to-End & Regression | 104 | Full pipeline, edge cases, regression, benchmarks |
-| CLI & Script Execution | 25 | Dot commands, `--file`, `.source`, error-stop behavior |
-| DML Operations | 20 | INSERT/UPDATE/DELETE, MERGE (upsert, update-only, insert-only) |
-| DDL Operations | 27 | ALTER TABLE, DROP TABLE/INDEX/VIEW, TRUNCATE |
-| Query Plan Visualization | 4 | EXPLAIN tree connectors, per-node stats, DOT export, `.plan` |
-| Triggers | 9 | CREATE/DROP TRIGGER, BEFORE/AFTER firing, multi-statement BEGIN...END, `.triggers` |
-| Constraints | 20 | NOT NULL, PRIMARY KEY, UNIQUE, CHECK, REFERENCES (FK) auto-index, UPDATE enforcement |
-| **Total** | **390** | **1219 assertions — all passing** |
+| Area | Tag(s) | Cases |
+|------|--------|------:|
+| **Total suite** | `all` | **405** |
+| Parsing and grammar | `[parser]` | 104 |
+| End-to-end SQL | `[e2e]` | 229 |
+| CLI and scripts | `[commands]` | 23 |
+| Storage core | `[storage]` | 32 |
+| Indexing | `[index]` | 19 |
+| Transactions | `[transaction]` | 8 |
+| Locking | `[lock]` | 5 |
+| Durability and WAL | `[durability]`, `[wal]` | 3, 2 |
+| Constraints and foreign keys | `[constraint]`, `[fk]` | 25, 11 |
+| Planner, optimizer, executor | `[planner]`, `[optimizer]`, `[executor]` | 11, 8, 8 |
+| DML and DDL families | `[dml]`, `[ddl]`, `[alter]`, `[merge]` | 15, 28, 16, 5 |
 
 ### Features Tested
 
