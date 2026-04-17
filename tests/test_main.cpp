@@ -1009,6 +1009,28 @@ TEST_CASE("Parser: scalar function call", "[parser][function]") {
     CHECK(stmt->select->select_list[2]->args.empty());
 }
 
+TEST_CASE("Parser: window function OVER clause", "[parser][function][window]") {
+    auto stmt = ast::parse_sql(
+        "SELECT ROW_NUMBER() OVER (PARTITION BY dept ORDER BY id DESC) FROM t;"
+    );
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_SELECT);
+    REQUIRE(stmt->select->select_list.size() == 1);
+
+    auto fn = stmt->select->select_list[0];
+    REQUIRE(fn->type == ast::ExprType::FUNC_CALL);
+    CHECK(fn->func_name == "ROW_NUMBER");
+    CHECK(fn->is_window_function == true);
+    REQUIRE(fn->window_partition_by.size() == 1);
+    CHECK(fn->window_partition_by[0]->type == ast::ExprType::COLUMN_REF);
+    CHECK(fn->window_partition_by[0]->column_name == "dept");
+    REQUIRE(fn->window_order_exprs.size() == 1);
+    CHECK(fn->window_order_exprs[0]->type == ast::ExprType::COLUMN_REF);
+    CHECK(fn->window_order_exprs[0]->column_name == "id");
+    REQUIRE(fn->window_order_asc.size() == 1);
+    CHECK(fn->window_order_asc[0] == 0);
+}
+
 // Parser -- Clauses (Where, Group By, Having, Order By, Limit)
 
 TEST_CASE("Parser: WHERE clause", "[parser][clause]") {
@@ -1995,6 +2017,95 @@ TEST_CASE("E2E: user-defined function invocation", "[e2e][function][udf]") {
     CHECK(as_int(res.rows[0][0]) == 3);
 }
 
+TEST_CASE("E2E: ROW_NUMBER window function", "[e2e][window]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+
+    auto res = run_query(
+        catalog,
+        "SELECT dept, id, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY id DESC) "
+        "FROM t ORDER BY dept, id DESC;"
+    );
+
+    REQUIRE(res.rows.size() == 5);
+    REQUIRE(res.rows[0].size() == 3);
+
+    CHECK(as_string(res.rows[0][0]) == "Engineering");
+    CHECK(as_int(res.rows[0][1]) == 3);
+    CHECK(as_int(res.rows[0][2]) == 1);
+
+    CHECK(as_string(res.rows[1][0]) == "Engineering");
+    CHECK(as_int(res.rows[1][1]) == 1);
+    CHECK(as_int(res.rows[1][2]) == 2);
+
+    CHECK(as_string(res.rows[2][0]) == "HR");
+    CHECK(as_int(res.rows[2][1]) == 4);
+    CHECK(as_int(res.rows[2][2]) == 1);
+
+    CHECK(as_string(res.rows[3][0]) == "Sales");
+    CHECK(as_int(res.rows[3][1]) == 5);
+    CHECK(as_int(res.rows[3][2]) == 1);
+
+    CHECK(as_string(res.rows[4][0]) == "Sales");
+    CHECK(as_int(res.rows[4][1]) == 2);
+    CHECK(as_int(res.rows[4][2]) == 2);
+}
+
+TEST_CASE("E2E: RANK and DENSE_RANK window functions", "[e2e][window]") {
+    storage::Catalog catalog;
+
+    auto tbl = std::make_shared<storage::Table>();
+    tbl->name = "scores";
+    tbl->schema = {
+        {"grp", storage::DataType::VARCHAR},
+        {"score", storage::DataType::INT},
+    };
+    tbl->rows = {
+        {std::string("A"), (int64_t)10},
+        {std::string("A"), (int64_t)10},
+        {std::string("A"), (int64_t)7},
+        {std::string("B"), (int64_t)5},
+        {std::string("B"), (int64_t)3},
+    };
+    catalog.add_table(tbl);
+
+    auto res = run_query(
+        catalog,
+        "SELECT grp, score, "
+        "RANK() OVER (PARTITION BY grp ORDER BY score DESC), "
+        "DENSE_RANK() OVER (PARTITION BY grp ORDER BY score DESC) "
+        "FROM scores ORDER BY grp, score DESC;"
+    );
+
+    REQUIRE(res.rows.size() == 5);
+    REQUIRE(res.rows[0].size() == 4);
+
+    CHECK(as_string(res.rows[0][0]) == "A");
+    CHECK(as_int(res.rows[0][1]) == 10);
+    CHECK(as_int(res.rows[0][2]) == 1);
+    CHECK(as_int(res.rows[0][3]) == 1);
+
+    CHECK(as_string(res.rows[1][0]) == "A");
+    CHECK(as_int(res.rows[1][1]) == 10);
+    CHECK(as_int(res.rows[1][2]) == 1);
+    CHECK(as_int(res.rows[1][3]) == 1);
+
+    CHECK(as_string(res.rows[2][0]) == "A");
+    CHECK(as_int(res.rows[2][1]) == 7);
+    CHECK(as_int(res.rows[2][2]) == 3);
+    CHECK(as_int(res.rows[2][3]) == 2);
+
+    CHECK(as_string(res.rows[3][0]) == "B");
+    CHECK(as_int(res.rows[3][1]) == 5);
+    CHECK(as_int(res.rows[3][2]) == 1);
+    CHECK(as_int(res.rows[3][3]) == 1);
+
+    CHECK(as_string(res.rows[4][0]) == "B");
+    CHECK(as_int(res.rows[4][1]) == 3);
+    CHECK(as_int(res.rows[4][2]) == 2);
+    CHECK(as_int(res.rows[4][3]) == 2);
+}
+
 // End-To-End -- Order By
 
 TEST_CASE("E2E: ORDER BY ASC (default)", "[e2e][orderby]") {
@@ -2637,6 +2748,19 @@ TEST_CASE("Planner: GROUP BY generates aggregation node", "[planner]") {
     CHECK(has_agg(plan));
 }
 
+TEST_CASE("Planner: aggregate plus window is rejected", "[planner][window]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    auto stmt = ast::parse_sql(
+        "SELECT dept, COUNT(*), ROW_NUMBER() OVER (PARTITION BY dept ORDER BY id) "
+        "FROM t GROUP BY dept;"
+    );
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_SELECT);
+
+    CHECK_THROWS(planner::build_logical_plan(*stmt->select, catalog));
+}
+
 // Optimizer -- Rule-Based
 
 TEST_CASE("Optimizer: selection pushdown below join", "[optimizer][rules]") {
@@ -2658,6 +2782,84 @@ TEST_CASE("Optimizer: selection pushdown below join", "[optimizer][rules]") {
     };
     // Should still have filter(s) in the optimized plan
     CHECK(count_filters(opt) >= 1);
+}
+
+TEST_CASE("Optimizer: constant folding on arithmetic projection", "[optimizer][rules][folding]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    auto stmt = ast::parse_sql("SELECT 1 + 2 * 3 FROM t;");
+    REQUIRE(stmt != nullptr);
+
+    auto plan = planner::build_logical_plan(*stmt->select, catalog);
+    auto opt = optimizer::optimize_rules(plan);
+
+    std::function<planner::LogicalNodePtr(const planner::LogicalNodePtr&)> find_projection;
+    find_projection = [&](const planner::LogicalNodePtr& n) -> planner::LogicalNodePtr {
+        if (!n) return nullptr;
+        if (n->type == planner::LogicalNodeType::PROJECTION) return n;
+        auto l = find_projection(n->left);
+        if (l) return l;
+        return find_projection(n->right);
+    };
+
+    auto proj = find_projection(opt);
+    REQUIRE(proj != nullptr);
+    REQUIRE(proj->projections.size() == 1);
+    CHECK(proj->projections[0]->type == ast::ExprType::LITERAL_INT);
+    CHECK(proj->projections[0]->int_val == 7);
+}
+
+TEST_CASE("Optimizer: constant folding for scalar built-ins", "[optimizer][rules][folding]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    auto stmt = ast::parse_sql("SELECT LOWER('ALICE'), ROUND(3.6) FROM t;");
+    REQUIRE(stmt != nullptr);
+
+    auto plan = planner::build_logical_plan(*stmt->select, catalog);
+    auto opt = optimizer::optimize_rules(plan);
+
+    std::function<planner::LogicalNodePtr(const planner::LogicalNodePtr&)> find_projection;
+    find_projection = [&](const planner::LogicalNodePtr& n) -> planner::LogicalNodePtr {
+        if (!n) return nullptr;
+        if (n->type == planner::LogicalNodeType::PROJECTION) return n;
+        auto l = find_projection(n->left);
+        if (l) return l;
+        return find_projection(n->right);
+    };
+
+    auto proj = find_projection(opt);
+    REQUIRE(proj != nullptr);
+    REQUIRE(proj->projections.size() == 2);
+    CHECK(proj->projections[0]->type == ast::ExprType::LITERAL_STRING);
+    CHECK(proj->projections[0]->str_val == "alice");
+    CHECK(proj->projections[1]->type == ast::ExprType::LITERAL_INT);
+    CHECK(proj->projections[1]->int_val == 4);
+}
+
+TEST_CASE("Optimizer: window function expression is not constant-folded", "[optimizer][rules][folding][window]") {
+    storage::Catalog catalog;
+    create_test_table(catalog);
+    auto stmt = ast::parse_sql("SELECT ROW_NUMBER() OVER (PARTITION BY dept ORDER BY id) FROM t;");
+    REQUIRE(stmt != nullptr);
+
+    auto plan = planner::build_logical_plan(*stmt->select, catalog);
+    auto opt = optimizer::optimize_rules(plan);
+
+    std::function<planner::LogicalNodePtr(const planner::LogicalNodePtr&)> find_projection;
+    find_projection = [&](const planner::LogicalNodePtr& n) -> planner::LogicalNodePtr {
+        if (!n) return nullptr;
+        if (n->type == planner::LogicalNodeType::PROJECTION) return n;
+        auto l = find_projection(n->left);
+        if (l) return l;
+        return find_projection(n->right);
+    };
+
+    auto proj = find_projection(opt);
+    REQUIRE(proj != nullptr);
+    REQUIRE(proj->projections.size() == 1);
+    CHECK(proj->projections[0]->type == ast::ExprType::FUNC_CALL);
+    CHECK(proj->projections[0]->is_window_function == true);
+    CHECK(proj->projections[0]->func_name == "ROW_NUMBER");
 }
 
 TEST_CASE("Optimizer: optimize does not change result", "[optimizer]") {

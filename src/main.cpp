@@ -132,7 +132,8 @@ Simple Query Processor -- Commands:
 
   Special commands:
     .help           Show this help
-    .functions      List built-in and user-defined functions
+        .functions [builtins|udf]
+                                        List built-in and/or user-defined functions
     .tables         List loaded tables
     .schema <tbl>   Show table schema
     .generate <n>   Generate sample data (n rows)
@@ -183,12 +184,25 @@ static ast::ExprPtr parse_function_body_expression(const std::string& body_sql) 
     return parsed->select->select_list[0];
 }
 
-static void print_functions(const storage::Catalog& catalog) {
+enum class FunctionListMode {
+    ALL,
+    BUILTINS_ONLY,
+    UDF_ONLY,
+};
+
+static void print_functions(const storage::Catalog& catalog, FunctionListMode mode = FunctionListMode::ALL) {
     auto builtins = executor::list_builtin_scalar_function_names();
     std::sort(builtins.begin(), builtins.end());
-    std::cout << "Built-in scalar functions (" << builtins.size() << "):\n";
-    for (const auto& fn : builtins) {
-        std::cout << "  - " << fn << "\n";
+
+    if (mode != FunctionListMode::UDF_ONLY) {
+        std::cout << "Built-in scalar functions (" << builtins.size() << "):\n";
+        for (const auto& fn : builtins) {
+            std::cout << "  - " << fn << "\n";
+        }
+    }
+
+    if (mode == FunctionListMode::BUILTINS_ONLY) {
+        return;
     }
 
     if (catalog.functions.empty()) {
@@ -1492,8 +1506,22 @@ static bool handle_dot_command(const std::string& line,
         print_help();
         return true;
     }
-    if (line == ".functions") {
-        print_functions(catalog);
+    if (starts_with(line, ".functions")) {
+        if (line.size() > 10 && line[10] != ' ') {
+            std::cout << "Unknown command: " << line << "\n";
+            return true;
+        }
+
+        std::string arg = trim_copy(line.substr(10));
+        if (arg.empty()) {
+            print_functions(catalog, FunctionListMode::ALL);
+        } else if (arg == "builtins") {
+            print_functions(catalog, FunctionListMode::BUILTINS_ONLY);
+        } else if (arg == "udf") {
+            print_functions(catalog, FunctionListMode::UDF_ONLY);
+        } else {
+            std::cout << "Usage: .functions [builtins|udf]\n";
+        }
         return true;
     }
     if (line == ".tables") {

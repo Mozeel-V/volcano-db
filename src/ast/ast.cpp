@@ -112,7 +112,32 @@ std::string Expr::to_string() const {
                 if (i) s += ", ";
                 s += args[i]->to_string();
             }
-            return s + ")";
+            s += ")";
+            if (is_window_function) {
+                s += " OVER (";
+                bool wrote_any = false;
+                if (!window_partition_by.empty()) {
+                    s += "PARTITION BY ";
+                    for (size_t i = 0; i < window_partition_by.size(); i++) {
+                        if (i) s += ", ";
+                        s += window_partition_by[i]->to_string();
+                    }
+                    wrote_any = true;
+                }
+                if (!window_order_exprs.empty()) {
+                    if (wrote_any) s += " ";
+                    s += "ORDER BY ";
+                    for (size_t i = 0; i < window_order_exprs.size(); i++) {
+                        if (i) s += ", ";
+                        s += window_order_exprs[i]->to_string();
+                        bool asc = true;
+                        if (i < window_order_asc.size()) asc = (window_order_asc[i] != 0);
+                        s += asc ? " ASC" : " DESC";
+                    }
+                }
+                s += ")";
+            }
+            return s;
         }
         case ExprType::SUBQUERY:
             return "(subquery)";

@@ -143,6 +143,9 @@ static Value eval_expr(const ExprPtr& expr, const EvalCtx& ctx) {
             return std::monostate{};
         }
         case ExprType::FUNC_CALL: {
+            if (expr->is_window_function) {
+                throw std::runtime_error("Window functions are only supported in SELECT projection");
+            }
             // In HAVING context, resolve aggregate by matching output column name
             std::string fn_str = expr->to_string();
             int idx = ctx.find_col(fn_str);
@@ -351,6 +354,128 @@ static bool eval_bool(const ExprPtr& expr, const EvalCtx& ctx) {
     return value_to_int(v) != 0;
 }
 
+static bool values_equal_for_window(const Value& a, const Value& b) {
+    if (value_is_null(a) && value_is_null(b)) return true;
+    if (value_is_null(a) || value_is_null(b)) return false;
+    return value_equal(a, b);
+}
+
+static bool is_window_function_expr(const ExprPtr& expr) {
+    return expr && expr->type == ExprType::FUNC_CALL && expr->is_window_function;
+}
+
+static std::vector<Value> compute_window_function_values(const ExprPtr& expr,
+                                                         const ExecResult& child,
+                                                         const EvalCtx& base_ctx) {
+    if (!is_window_function_expr(expr)) {
+        return std::vector<Value>(child.rows.size(), std::monostate{});
+    }
+
+    std::string fn = normalize_function_name(expr->func_name);
+    if (fn != "ROW_NUMBER" && fn != "RANK" && fn != "DENSE_RANK") {
+        throw std::runtime_error("Unsupported window function: " + expr->func_name);
+    }
+    if (expr->distinct_func) {
+        throw std::runtime_error("DISTINCT is not supported for window function: " + expr->func_name);
+    }
+
+    std::vector<Value> out(child.rows.size(), std::monostate{});
+    std::unordered_map<std::string, std::vector<size_t>> partitions;
+
+    for (size_t ri = 0; ri < child.rows.size(); ri++) {
+        EvalCtx ctx = base_ctx;
+        ctx.row = &child.rows[ri];
+
+        std::string partition_key;
+        for (const auto& part_expr : expr->window_partition_by) {
+            partition_key += value_display(eval_expr(part_expr, ctx));
+            partition_key += "\x1f";
+        }
+        partitions[partition_key].push_back(ri);
+    }
+
+    for (auto& [_, indices] : partitions) {
+        if (!expr->window_order_exprs.empty()) {
+            std::stable_sort(indices.begin(), indices.end(),
+                [&](size_t a_idx, size_t b_idx) {
+                    EvalCtx ac = base_ctx;
+                    ac.row = &child.rows[a_idx];
+                    EvalCtx bc = base_ctx;
+                    bc.row = &child.rows[b_idx];
+
+                    for (size_t oi = 0; oi < expr->window_order_exprs.size(); oi++) {
+                        Value av = eval_expr(expr->window_order_exprs[oi], ac);
+                        Value bv = eval_expr(expr->window_order_exprs[oi], bc);
+                        bool asc = (oi < expr->window_order_asc.size()) ? (expr->window_order_asc[oi] != 0) : true;
+
+                        if (values_equal_for_window(av, bv)) continue;
+
+                        if (value_is_null(av) && !value_is_null(bv)) return !asc;
+                        if (!value_is_null(av) && value_is_null(bv)) return asc;
+
+                        bool lt = value_less(av, bv);
+                        return asc ? lt : !lt;
+                    }
+                    return a_idx < b_idx;
+                }
+            );
+        }
+
+        if (fn == "ROW_NUMBER") {
+            for (size_t i = 0; i < indices.size(); i++) {
+                out[indices[i]] = static_cast<int64_t>(i + 1);
+            }
+            continue;
+        }
+
+        if (expr->window_order_exprs.empty()) {
+            for (size_t idx : indices) out[idx] = static_cast<int64_t>(1);
+            continue;
+        }
+
+        int64_t rank = 1;
+        int64_t dense_rank = 1;
+
+        std::vector<Value> prev_keys;
+        prev_keys.reserve(expr->window_order_exprs.size());
+
+        for (size_t i = 0; i < indices.size(); i++) {
+            EvalCtx cur_ctx = base_ctx;
+            cur_ctx.row = &child.rows[indices[i]];
+
+            std::vector<Value> cur_keys;
+            cur_keys.reserve(expr->window_order_exprs.size());
+            for (const auto& order_expr : expr->window_order_exprs) {
+                cur_keys.push_back(eval_expr(order_expr, cur_ctx));
+            }
+
+            bool peer = (i > 0);
+            if (peer) {
+                for (size_t k = 0; k < cur_keys.size(); k++) {
+                    if (!values_equal_for_window(cur_keys[k], prev_keys[k])) {
+                        peer = false;
+                        break;
+                    }
+                }
+            }
+
+            if (!peer && i > 0) {
+                rank = static_cast<int64_t>(i + 1);
+                dense_rank++;
+            }
+
+            if (fn == "RANK") {
+                out[indices[i]] = static_cast<int64_t>(rank);
+            } else {
+                out[indices[i]] = static_cast<int64_t>(dense_rank);
+            }
+            prev_keys = std::move(cur_keys);
+        }
+    }
+
+    return out;
+}
+
 static ExecResult exec_node(const LogicalNodePtr& node, Catalog& catalog, ExecStats& stats);
 
 static ExecResult exec_scan(const LogicalNodePtr& node, Catalog& catalog, ExecStats& stats) {
@@ -500,12 +625,23 @@ static ExecResult exec_projection(const LogicalNodePtr& node, Catalog& catalog, 
         }
     }
 
-    for (auto& row : child.rows) {
+    std::unordered_map<size_t, std::vector<Value>> window_values_by_projection;
+    for (size_t pi = 0; pi < node->projections.size(); pi++) {
+        if (is_window_function_expr(node->projections[pi])) {
+            window_values_by_projection[pi] = compute_window_function_values(node->projections[pi], child, ctx);
+        }
+    }
+
+    for (size_t ri = 0; ri < child.rows.size(); ri++) {
+        auto& row = child.rows[ri];
         ctx.row = &row;
         Row out;
-        for (auto& proj : node->projections) {
+        for (size_t pi = 0; pi < node->projections.size(); pi++) {
+            auto& proj = node->projections[pi];
             if (proj->type == ExprType::STAR) {
                 for (auto& v : row) out.push_back(v);
+            } else if (is_window_function_expr(proj)) {
+                out.push_back(window_values_by_projection[pi][ri]);
             } else {
                 out.push_back(eval_expr(proj, ctx));
             }

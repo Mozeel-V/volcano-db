@@ -21,6 +21,9 @@ static std::string take_str(char* s) { std::string r(s); free(s); return r; }
 
 #include "parser/parser_types.h"
 
+static ExprPtr wrap(Expr* e);
+static TableRefPtr twrap(TableRef* t);
+
 static RawExprList make_elist() { RawExprList l = {nullptr,0,0}; return l; }
 static RawTRefList make_tlist() { RawTRefList l = {nullptr,0,0}; return l; }
 static RawOrderList make_olist(){ RawOrderList l = {0,0,nullptr,nullptr}; return l; }
@@ -106,6 +109,32 @@ static void fplist_push(RawFuncParamList& l, char* name, char* type) {
   l.count++;
 }
 
+  static RawWindowSpec make_wspec() {
+    RawWindowSpec w;
+    w.has_over = 0;
+    w.partition_by = make_elist();
+    w.order_by = make_olist();
+    return w;
+  }
+
+  static void apply_window_spec(Expr* e, RawWindowSpec& w) {
+    if (w.has_over) {
+      e->is_window_function = true;
+      for (int i = 0; i < w.partition_by.count; i++) {
+        e->window_partition_by.push_back(wrap(w.partition_by.items[i]));
+      }
+      for (int i = 0; i < w.order_by.count; i++) {
+        e->window_order_exprs.push_back(wrap(w.order_by.exprs[i]));
+        e->window_order_asc.push_back(w.order_by.ascs[i]);
+      }
+    }
+    if (w.partition_by.items) free(w.partition_by.items);
+    if (w.order_by.exprs) {
+      free(w.order_by.exprs);
+      free(w.order_by.ascs);
+    }
+  }
+
 /* Wrap raw Expr* into ExprPtr (takes ownership) */
 static ExprPtr wrap(Expr* e) { return std::shared_ptr<Expr>(e); }
 static TableRefPtr twrap(TableRef* t) { return std::shared_ptr<TableRef>(t); }
@@ -141,6 +170,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
     RawRowList       rowlist;
     RawAssignList    assignlist;
     RawFuncParamList fparams;
+    RawWindowSpec    wspec;
     RawConstraints   constraints;
     RawStrList       slist;
     RawCaseList      caselist;
@@ -152,6 +182,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %token AS ON JOIN INNER LEFT RIGHT FULL OUTER CROSS
 %token GROUP BY HAVING ORDER ASC DESC LIMIT OFFSET
 %token UNION INTERSECT EXCEPT ALL SOME ANY
+%token OVER PARTITION
 %token WITH CREATE TABLE VIEW MATERIALIZED INDEX USING HASH BTREE
 %token FUNCTION RETURNS
 %token INSERT INTO VALUES LOAD EXPLAIN ANALYZE BENCHMARK_KW
@@ -184,6 +215,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %type <olist>     opt_order_by order_list
 %type <cdlist>    column_def_list
 %type <fparams>   func_param_list opt_func_param_list
+%type <wspec>     opt_over_clause over_clause
 %type <str_val>   opt_alias data_type agg_name function_name
 %type <ival>      opt_distinct opt_asc_desc join_kind before_after trigger_event quantifier_kw opt_on_delete opt_union_all
 %type <constraints> col_constraints
@@ -191,12 +223,16 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %type <int_val>   opt_limit opt_offset
 %type <rowlist>   insert_rows
 %type <assignlist> set_list
+%type <elist>     opt_partition_clause
+%type <olist>     opt_window_order_by
 %type <caselist>  case_when_then_list
 %type <expr_raw>  opt_case_else
 
 %nonassoc UMINUS
 
 %start input
+
+%expect 1
 
 %%
 
@@ -300,23 +336,6 @@ statement:
           cv->materialized = true;
           st->create_view = cv; $$ = st;
       }
-    | CREATE FUNCTION IDENTIFIER '(' opt_func_param_list ')' RETURNS data_type AS STRING_LITERAL {
-        auto st = new Statement(); st->type = StmtType::ST_CREATE_FUNCTION;
-        auto fn = std::make_shared<CreateFunctionStmt>();
-        fn->function_name = take_str($3);
-        for (int i = 0; i < $5.count; i++) {
-          FunctionParamDef param;
-          param.name = take_str($5.names[i]);
-          param.data_type = take_str($5.types[i]);
-          fn->params.push_back(std::move(param));
-        }
-        if ($5.names) free($5.names);
-        if ($5.types) free($5.types);
-        fn->return_type = take_str($8);
-        fn->body_sql = take_str($10);
-        st->create_function = fn;
-        $$ = st;
-      }
     | CREATE FUNCTION IDENTIFIER '(' opt_func_param_list ')' RETURNS data_type AS expr {
         auto st = new Statement(); st->type = StmtType::ST_CREATE_FUNCTION;
         auto fn = std::make_shared<CreateFunctionStmt>();
@@ -330,7 +349,12 @@ statement:
         if ($5.names) free($5.names);
         if ($5.types) free($5.types);
         fn->return_type = take_str($8);
-        fn->body_expr = wrap($10);
+        auto body = wrap($10);
+        if (body && body->type == ExprType::LITERAL_STRING) {
+          fn->body_sql = body->str_val;
+        } else {
+          fn->body_expr = body;
+        }
         st->create_function = fn;
         $$ = st;
       }
@@ -733,6 +757,30 @@ func_param_list:
       }
     ;
 
+opt_over_clause:
+      /* empty */ { $$ = make_wspec(); }
+    | over_clause { $$ = $1; }
+    ;
+
+over_clause:
+      OVER '(' opt_partition_clause opt_window_order_by ')' {
+          $$ = make_wspec();
+          $$.has_over = 1;
+          $$.partition_by = $3;
+          $$.order_by = $4;
+      }
+    ;
+
+opt_partition_clause:
+      /* empty */ { $$ = make_elist(); }
+    | PARTITION BY expr_list { $$ = $3; }
+    ;
+
+opt_window_order_by:
+      /* empty */ { $$ = make_olist(); }
+    | ORDER BY order_list { $$ = $3; }
+    ;
+
 expr_list:
       expr                  { $$ = make_elist(); elist_push($$, $1); }
     | expr_list ',' expr    { $$ = $1; elist_push($$, $3); }
@@ -882,26 +930,34 @@ expr_primary:
           auto e = new Expr(); e->type = ExprType::STAR;
           e->table_name = take_str($1); $$ = e;
       }
-        | function_name '(' ')' {
+        | function_name '(' ')' opt_over_clause {
           auto e = new Expr(); e->type = ExprType::FUNC_CALL;
-          e->func_name = take_str($1); $$ = e;
+          e->func_name = take_str($1);
+          apply_window_spec(e, $4);
+          $$ = e;
       }
-        | function_name '(' expr_list ')' {
+        | function_name '(' expr_list ')' opt_over_clause {
           auto e = new Expr(); e->type = ExprType::FUNC_CALL;
           e->func_name = take_str($1);
           for (int i = 0; i < $3.count; i++) e->args.push_back(wrap($3.items[i]));
-          free($3.items); $$ = e;
+          free($3.items);
+          apply_window_spec(e, $5);
+          $$ = e;
       }
-        | function_name '(' '*' ')' {
+        | function_name '(' '*' ')' opt_over_clause {
           auto e = new Expr(); e->type = ExprType::FUNC_CALL;
           e->func_name = take_str($1);
           auto star = new Expr(); star->type = ExprType::STAR;
-          e->args.push_back(wrap(star)); $$ = e;
+          e->args.push_back(wrap(star));
+          apply_window_spec(e, $5);
+          $$ = e;
       }
-        | function_name '(' DISTINCT expr ')' {
+        | function_name '(' DISTINCT expr ')' opt_over_clause {
           auto e = new Expr(); e->type = ExprType::FUNC_CALL;
           e->func_name = take_str($1); e->distinct_func = true;
-          e->args.push_back(wrap($4)); $$ = e;
+          e->args.push_back(wrap($4));
+          apply_window_spec(e, $6);
+          $$ = e;
       }
         | IDENTIFIER {
           auto e = new Expr(); e->type = ExprType::COLUMN_REF;

@@ -1,5 +1,10 @@
 # VolcanoDB
 
+[![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=c%2B%2B)](#building)
+[![CMake 3.16+](https://img.shields.io/badge/CMake-3.16%2B-064F8C?logo=cmake)](#building)
+[![Flex/Bison](https://img.shields.io/badge/Flex%2FBison-Parser%20Toolchain-6A4C93)](#architecture)
+[![License](https://img.shields.io/badge/License-Apache%202.0-1B5E20)](LICENSE)
+
 VolcanoDB is a relational SQL engine built in C++17 with Flex and Bison. It parses SQL into an AST, builds logical and physical plans, applies rule-based and cost-based optimization, and executes queries with a Volcano-style engine over an in-memory storage layer with indexes, constraints, views, and triggers. It also provides ACID transaction support for DML using table-level locking, WAL-backed durability, checkpointing, and startup recovery.
 
 <p align="center">
@@ -19,6 +24,16 @@ VolcanoDB is a relational SQL engine built in C++17 with Flex and Bison. It pars
 - **Bison** (parser generator)
 
 ### Installing dependencies
+
+**Windows (MSYS2 + MinGW-w64, recommended):**
+
+1. Install MSYS2 from https://www.msys2.org/
+2. Open the **MSYS2 MinGW x64** shell and run:
+
+```bash
+pacman -Syu
+pacman -S --needed mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake mingw-w64-x86_64-flex mingw-w64-x86_64-bison make
+```
 
 **macOS (Homebrew):**
 ```bash
@@ -103,7 +118,7 @@ ROLLBACK;
 | Command | Description |
 |---|---|
 | `.help` | Show help |
-| `.functions` | List built-in and user-defined SQL functions |
+| `.functions [builtins\|udf]` | List built-in and/or user-defined SQL functions |
 | `.tables` | List loaded tables |
 | `.schema <table>` | Show table schema |
 | `.generate <n>` | Generate sample data with n employee rows |
@@ -151,7 +166,7 @@ src/
 │   └── physical_plan.cpp # Physical plan annotation (join algorithm selection)
 ├── optimizer/        # Query optimization
 │   ├── optimizer.h       # optimize_rules(), optimize_cost(), optimize()
-│   ├── rule_optimizer.cpp# Selection pushdown, projection pushdown
+│   ├── rule_optimizer.cpp# Constant folding + selection/projection pushdown
 │   └── cost_optimizer.cpp# Selectivity estimation, cost annotation, hash join selection
 ├── executor/         # Query execution engine
 │   ├── executor.h    #   ExecStats, ExecResult, execute()
@@ -168,16 +183,16 @@ src/
 
 ### Key components
 
-**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), predicate operators including `IN`, `NOT IN`, `EXISTS`, `NOT EXISTS`, and quantified subquery predicates (`SOME`/`ANY`, `ALL`), plus expression forms like `CASE WHEN ... THEN ... ELSE ... END`, and `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `CREATE FUNCTION`, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, `DROP TABLE/INDEX/VIEW/FUNCTION`, `TRUNCATE`, `LOAD`, `EXPLAIN`, `BENCHMARK`, and transaction statements `BEGIN [TRANSACTION]`, `COMMIT`, `ROLLBACK`.
+**Parser** — Flex tokenizes SQL into keywords, operators, and literals. Bison parses tokens into an AST using a precedence-climbing expression grammar. Supports `SELECT` (with `DISTINCT`, `JOIN`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`), predicate operators including `IN`, `NOT IN`, `EXISTS`, `NOT EXISTS`, and quantified subquery predicates (`SOME`/`ANY`, `ALL`), plus expression forms like `CASE WHEN ... THEN ... ELSE ... END`, scalar and aggregate function calls, and window `OVER (PARTITION BY ... ORDER BY ...)` clauses. DDL/DML support includes `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW`, `CREATE MATERIALIZED VIEW`, `CREATE FUNCTION`, `INSERT`, `UPDATE`, `DELETE`, `ALTER TABLE`, `DROP TABLE/INDEX/VIEW/FUNCTION`, `TRUNCATE`, `LOAD`, `EXPLAIN`, `BENCHMARK`, and transaction statements `BEGIN [TRANSACTION]`, `COMMIT`, `ROLLBACK`.
 
-**AST** (`ast::Expr`, `ast::SelectStmt`, `ast::Statement`) — Tree representation of parsed SQL. Expressions cover column refs, literals, binary/unary ops, function calls (scalar, aggregate, and UDF invocations), subqueries, `IN`/`NOT IN`, `EXISTS`/`NOT EXISTS`, quantified predicates (`SOME`/`ANY`, `ALL`), `BETWEEN`, `LIKE`, `CASE`.
+**AST** (`ast::Expr`, `ast::SelectStmt`, `ast::Statement`) — Tree representation of parsed SQL. Expressions cover column refs, literals, binary/unary ops, function calls (scalar, aggregate, window, and UDF invocations), subqueries, `IN`/`NOT IN`, `EXISTS`/`NOT EXISTS`, quantified predicates (`SOME`/`ANY`, `ALL`), `BETWEEN`, `LIKE`, `CASE`.
 
 **Storage** (`storage::Table`, `storage::Catalog`, `storage::HashIndex`) — In-memory row store. `Value` is a `std::variant<std::monostate, int64_t, double, std::string>`. The catalog manages tables, views, SQL UDF definitions, and provides statistics (row counts, distinct values) for the cost optimizer.
 
 **Planner** (`planner::LogicalNode`) — Converts the AST into a tree of logical operators: `TABLE_SCAN`, `FILTER`, `PROJECTION`, `JOIN`, `AGGREGATION`, `SORT`, `LIMIT`, `DISTINCT`.
 
 **Optimizer** — Two-phase optimization:
-1. **Rule-based** (`optimize_rules`): Selection pushdown (push filters below joins/projections), projection pushdown.
+1. **Rule-based** (`optimize_rules`): Constant folding for deterministic literal/scalar subexpressions, selection pushdown (push filters below joins/projections), projection pushdown.
 2. **Cost-based** (`optimize_cost`): Estimates selectivity and row counts, annotates cost on each node, selects hash join over nested-loop join when estimated comparisons exceed a threshold.
 
 **Transactions** — `TransactionManager` maintains per-transaction undo records for row-level `INSERT`/`UPDATE`/`DELETE`/`MERGE` changes. `ROLLBACK` replays undo in reverse and rebuilds affected indexes. `COMMIT` clears undo records.
@@ -188,7 +203,7 @@ src/
 
 **Consistency hardening** — Catalog-level index integrity checks validate table/index synchronization after rollback and during/after recovery replay.
 
-**Executor** — Volcano-style pull-based execution. Implements sequential scan, filter, projection, nested-loop join, hash join, aggregation, sort, limit, and distinct operators. The expression evaluator handles all `BinOp`/`UnaryOp` types, NULL propagation, scalar built-ins, SQL UDF invocation, and SQL-style `LIKE` matching with `%`, `_`, and escaped wildcards.
+**Executor** — Volcano-style pull-based execution. Implements sequential scan, filter, projection, nested-loop join, hash join, aggregation, sort, limit, and distinct operators. The expression evaluator handles all `BinOp`/`UnaryOp` types, NULL propagation, scalar built-ins, SQL UDF invocation, and SQL-style `LIKE` matching with `%`, `_`, and escaped wildcards. Projection also supports window functions `ROW_NUMBER`, `RANK`, and `DENSE_RANK` with `PARTITION BY` and `ORDER BY`.
 
 ## Supported SQL
 
@@ -201,6 +216,11 @@ SELECT [DISTINCT] <columns> FROM <tables>
   [HAVING <condition>]
   [ORDER BY <columns> [ASC|DESC]]
   [LIMIT n [OFFSET m]];
+
+-- Window expressions in SELECT
+SELECT ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) FROM employees;
+SELECT RANK() OVER (PARTITION BY dept ORDER BY salary DESC) FROM employees;
+SELECT DENSE_RANK() OVER (PARTITION BY dept ORDER BY salary DESC) FROM employees;
 
 -- DDL / DML
 CREATE TABLE <name> (<col> <type>, ...);
@@ -240,12 +260,14 @@ ABS(x), ROUND(x), CEIL(x), FLOOR(x), COALESCE(a, b), NULLIF(a, b),
 custom_udf(col1, col2);
 ```
 
-### Functions and Pattern Matching
+### Functions, Pattern Matching, and Window Analytics
 
 - Scalar built-ins are supported in expression contexts (`SELECT`, `WHERE`, `ORDER BY`, `GROUP BY`): `LOWER`, `UPPER`, `LENGTH`, `TRIM`, `SUBSTR`, `ABS`, `ROUND`, `CEIL`/`CEILING`, `FLOOR`, `COALESCE`, `NULLIF`.
 - SQL UDF lifecycle is supported via `CREATE FUNCTION ... RETURNS ... AS ...` and `DROP FUNCTION`.
 - UDF resolution is name-based and currently expression-body focused (no statement-body UDFs).
 - `LIKE` supports SQL wildcards `%` and `_`, plus escaped literals (for example `LIKE 'a\_b'` and `LIKE 'a\%b'`).
+- Window functions are supported in projection via `ROW_NUMBER`, `RANK`, and `DENSE_RANK` with `OVER (PARTITION BY ... ORDER BY ...)`.
+- Current window limitation: mixing window expressions with `GROUP BY`/aggregate queries in the same select block is rejected.
 
 ### Transaction notes (current behavior)
 
@@ -315,10 +337,10 @@ Tag snapshot from `./vdb_tests --list-tags` (counts are per-tag and overlap acro
 
 | Area | Tag(s) | Cases |
 |------|--------|------:|
-| **Total suite** | `all` | **433** |
-| Parsing and grammar | `[parser]` | 104 |
-| End-to-end SQL | `[e2e]` | 239 |
-| CLI and scripts | `[commands]` | 23 |
+| **Total suite** | `all` | **445** |
+| Parsing and grammar | `[parser]` | 108 |
+| End-to-end SQL | `[e2e]` | 251 |
+| CLI and scripts | `[commands]` | 29 |
 | Storage core | `[storage]` | 38 |
 | Indexing | `[index]` | 21 |
 | ACID evidence matrix | `[acid]`, `[acid-a]`, `[acid-c]`, `[acid-i]`, `[acid-d]` | 19, 1, 3, 5, 11 |
@@ -329,8 +351,8 @@ Tag snapshot from `./vdb_tests --list-tags` (counts are per-tag and overlap acro
 | Recovery hardening | `[recovery]` | 3 |
 | Consistency hardening | `[consistency]` | 2 |
 | Constraints and foreign keys | `[constraint]`, `[fk]` | 26, 11 |
-| Planner, optimizer, executor | `[planner]`, `[optimizer]`, `[executor]` | 11, 8, 8 |
-| DML and DDL families | `[dml]`, `[ddl]`, `[alter]`, `[merge]` | 15, 28, 16, 5 |
+| Planner, optimizer, executor | `[planner]`, `[optimizer]`, `[executor]` | 12, 11, 8 |
+| DML and DDL families | `[dml]`, `[ddl]`, `[alter]`, `[merge]` | 15, 30, 16, 6 |
 
 ### Features Tested
 

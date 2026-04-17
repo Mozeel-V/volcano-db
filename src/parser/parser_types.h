@@ -30,6 +30,13 @@ struct RawAssignList { char** cols; ast::Expr** vals; int count; int cap; };
 /* CREATE FUNCTION parameters: parallel arrays of names and data types */
 struct RawFuncParamList { char** names; char** types; int count; int cap; };
 
+/* Window spec for function OVER (...) clauses */
+struct RawWindowSpec {
+    int has_over;
+    RawExprList partition_by;
+    RawOrderList order_by;
+};
+
 /* Column constraint flags - accumulated during parsing */
 struct RawConstraints {
     int not_null;

@@ -60,6 +60,8 @@ extern int yylineno;
 "SOME"              { return SOME; }
 "ANY"               { return ANY; }
 "WITH"              { return WITH; }
+"OVER"              { return OVER; }
+"PARTITION"         { return PARTITION; }
 "CREATE"            { return CREATE; }
 "TABLE"             { return TABLE; }
 "VIEW"              { return VIEW; }

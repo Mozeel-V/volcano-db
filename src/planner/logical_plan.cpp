@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <stdexcept>
 
 namespace planner {
 
@@ -161,6 +162,7 @@ std::string LogicalNode::to_dot_string() const {
 static bool has_aggregates(const ast::ExprPtr& expr) {
     if (!expr) return false;
     if (expr->type == ast::ExprType::FUNC_CALL) {
+        if (expr->is_window_function) return false;
         std::string fn = expr->func_name;
         std::transform(fn.begin(), fn.end(), fn.begin(), ::toupper);
         if (fn == "COUNT" || fn == "SUM" || fn == "AVG" || fn == "MIN" || fn == "MAX")
@@ -170,6 +172,18 @@ static bool has_aggregates(const ast::ExprPtr& expr) {
     if (has_aggregates(expr->right)) return true;
     if (has_aggregates(expr->operand)) return true;
     for (auto& a : expr->args) if (has_aggregates(a)) return true;
+    return false;
+}
+
+static bool has_window_functions(const ast::ExprPtr& expr) {
+    if (!expr) return false;
+    if (expr->type == ast::ExprType::FUNC_CALL && expr->is_window_function) return true;
+    if (has_window_functions(expr->left)) return true;
+    if (has_window_functions(expr->right)) return true;
+    if (has_window_functions(expr->operand)) return true;
+    for (auto& a : expr->args) if (has_window_functions(a)) return true;
+    for (auto& p : expr->window_partition_by) if (has_window_functions(p)) return true;
+    for (auto& o : expr->window_order_exprs) if (has_window_functions(o)) return true;
     return false;
 }
 
@@ -227,10 +241,20 @@ LogicalNodePtr build_logical_plan(const ast::SelectStmt& stmt, storage::Catalog&
 
     // 3. GROUP BY / Aggregation
     bool need_agg = !stmt.group_by.empty();
+    bool has_window = false;
     if (!need_agg) {
         for (auto& sel : stmt.select_list) {
             if (has_aggregates(sel)) { need_agg = true; break; }
+            if (has_window_functions(sel)) has_window = true;
         }
+    } else {
+        for (auto& sel : stmt.select_list) {
+            if (has_window_functions(sel)) { has_window = true; break; }
+        }
+    }
+
+    if (need_agg && has_window) {
+        throw std::runtime_error("Window functions mixed with GROUP BY/aggregate queries are not supported yet");
     }
     if (need_agg) {
         auto agg = std::make_shared<LogicalNode>();

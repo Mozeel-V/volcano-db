@@ -149,6 +149,18 @@ TEST_CASE("E2E: .functions lists built-ins", "[e2e][commands][function]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("User-defined SQL functions: (none)"));
 }
 
+TEST_CASE("E2E: .functions builtins filter", "[e2e][commands][function]") {
+    std::string output = run_interactive(
+        "CREATE FUNCTION add1(x INT) RETURNS INT AS 'x + 1';\n"
+        ".functions builtins\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Built-in scalar functions"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("LOWER"));
+    CHECK(output.find("User-defined SQL functions") == std::string::npos);
+}
+
 TEST_CASE("E2E: .functions lists user-defined functions", "[e2e][commands][function]") {
     std::string output = run_interactive(
         "CREATE FUNCTION add1(x INT) RETURNS INT AS 'x + 1';\n"
@@ -158,6 +170,27 @@ TEST_CASE("E2E: .functions lists user-defined functions", "[e2e][commands][funct
 
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("User-defined SQL functions (1):"));
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("add1(x INT) RETURNS INT"));
+}
+
+TEST_CASE("E2E: .functions udf filter", "[e2e][commands][function]") {
+    std::string output = run_interactive(
+        "CREATE FUNCTION add1(x INT) RETURNS INT AS 'x + 1';\n"
+        ".functions udf\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("User-defined SQL functions (1):"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("add1(x INT) RETURNS INT"));
+    CHECK(output.find("Built-in scalar functions") == std::string::npos);
+}
+
+TEST_CASE("E2E: .functions invalid filter", "[e2e][commands][function]") {
+    std::string output = run_interactive(
+        ".functions unknown\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Usage: .functions [builtins|udf]"));
 }
 
 

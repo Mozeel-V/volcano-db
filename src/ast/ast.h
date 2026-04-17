@@ -71,6 +71,10 @@ struct Expr {
     std::string func_name;
     std::vector<ExprPtr> args;
     bool distinct_func = false;
+    bool is_window_function = false;
+    std::vector<ExprPtr> window_partition_by;
+    std::vector<ExprPtr> window_order_exprs;
+    std::vector<int> window_order_asc;
     // SUBQUERY
     std::shared_ptr<SelectStmt> subquery;
     // IN list
