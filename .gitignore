@@ -46,3 +46,11 @@ plan.*
 *.tex
 *.zip
 .vscode/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local runtime persistence artifacts
+sqp.wal
+sqp.checkpoint

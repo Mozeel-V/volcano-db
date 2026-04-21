@@ -75,6 +75,27 @@ or
 ./vdb --file path/to/script.sql
 ```
 
+### Server mode
+
+Run VolcanoDB as a TCP server:
+
+```bash
+./vdb --server --host 127.0.0.1 --port 54330
+```
+
+The server currently uses a text-based native protocol documented in [docs/protocol.md](docs/protocol.md).
+
+Session identity model:
+
+1. One active session per connected client endpoint (`IP:port`).
+2. Different server endpoints (`host:port`) represent separate server instances.
+
+Python native client smoke test:
+
+```bash
+python clients/python/smoke_test.py --host 127.0.0.1 --port 54330
+```
+
 ### Quick start
 
 ```sql

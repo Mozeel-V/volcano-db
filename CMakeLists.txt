@@ -56,6 +56,9 @@ set(LIB_SOURCES
 # Main executable
 add_executable(vdb src/main.cpp ${LIB_SOURCES})
 target_compile_options(vdb PRIVATE -O2 -Wall)
+if(WIN32)
+    target_link_libraries(vdb PRIVATE ws2_32)
+endif()
 
 # ----- Tests (Catch2) -----
 # Try system-installed Catch2 first; fall back to downloading if not found

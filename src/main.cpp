@@ -9,6 +9,23 @@
 #include <vector>
 #include <set>
 #include <cstdint>
+#include <mutex>
+#include <thread>
+#include <atomic>
+#include <cstring>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include "ast/ast.h"
 #include "storage/storage.h"
@@ -1686,6 +1703,207 @@ static bool run_script_file(const std::string& path,
     return true;
 }
 
+#ifdef _WIN32
+using SocketHandle = SOCKET;
+static constexpr SocketHandle INVALID_SOCKET_HANDLE = INVALID_SOCKET;
+#else
+using SocketHandle = int;
+static constexpr SocketHandle INVALID_SOCKET_HANDLE = -1;
+#endif
+
+static void close_socket_handle(SocketHandle sock) {
+#ifdef _WIN32
+    closesocket(sock);
+#else
+    close(sock);
+#endif
+}
+
+static bool init_socket_layer() {
+#ifdef _WIN32
+    WSADATA wsa_data;
+    return WSAStartup(MAKEWORD(2, 2), &wsa_data) == 0;
+#else
+    return true;
+#endif
+}
+
+static void shutdown_socket_layer() {
+#ifdef _WIN32
+    WSACleanup();
+#endif
+}
+
+static bool send_all(SocketHandle sock, const std::string& payload) {
+    size_t sent = 0;
+    while (sent < payload.size()) {
+        int n = send(sock, payload.data() + sent, static_cast<int>(payload.size() - sent), 0);
+        if (n <= 0) return false;
+        sent += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+static bool execute_sql_with_capture(const std::string& sql,
+                                     storage::Catalog& catalog,
+                                     storage::TransactionManager& txn_manager,
+                                     storage::LockManager& lock_manager,
+                                     storage::WalManager& wal_manager,
+                                     std::mutex& engine_mutex,
+                                     std::string& captured) {
+    std::lock_guard<std::mutex> guard(engine_mutex);
+    std::ostringstream oss;
+    auto* old_buf = std::cout.rdbuf(oss.rdbuf());
+    bool ok = execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+    std::cout.rdbuf(old_buf);
+    captured = oss.str();
+    return ok;
+}
+
+static void handle_server_client(SocketHandle client_sock,
+                                 std::string session_id,
+                                 storage::Catalog& catalog,
+                                 storage::TransactionManager& txn_manager,
+                                 storage::LockManager& lock_manager,
+                                 storage::WalManager& wal_manager,
+                                 std::mutex& engine_mutex) {
+    std::string hello = "HELLO VDB\nSESSION " + session_id + "\n";
+    if (!send_all(client_sock, hello)) {
+        close_socket_handle(client_sock);
+        return;
+    }
+
+    std::string recv_buffer;
+    std::string sql_buffer;
+    char tmp[4096];
+
+    while (true) {
+        int n = recv(client_sock, tmp, sizeof(tmp), 0);
+        if (n <= 0) break;
+        recv_buffer.append(tmp, static_cast<size_t>(n));
+
+        size_t nl_pos;
+        while ((nl_pos = recv_buffer.find('\n')) != std::string::npos) {
+            std::string line = recv_buffer.substr(0, nl_pos);
+            recv_buffer.erase(0, nl_pos + 1);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+
+            std::string cmd = trim_copy(line);
+            if (cmd.empty()) continue;
+
+            if (cmd == "PING") {
+                if (!send_all(client_sock, "PONG\n")) goto client_done;
+                continue;
+            }
+            if (cmd == "QUIT" || cmd == ".quit" || cmd == ".exit") {
+                send_all(client_sock, "BYE\n");
+                goto client_done;
+            }
+
+            if (!sql_buffer.empty()) sql_buffer += " ";
+            sql_buffer += cmd;
+            if (sql_buffer.back() != ';') {
+                if (!send_all(client_sock, "CONTINUE\n")) goto client_done;
+                continue;
+            }
+
+            std::string captured;
+            bool ok = execute_sql_with_capture(sql_buffer, catalog, txn_manager, lock_manager, wal_manager,
+                                               engine_mutex, captured);
+            sql_buffer.clear();
+
+            if (!send_all(client_sock, ok ? "OK\n" : "ERROR\n")) goto client_done;
+            if (!captured.empty() && !send_all(client_sock, captured)) goto client_done;
+            if (!send_all(client_sock, "END\n")) goto client_done;
+        }
+    }
+
+client_done:
+    close_socket_handle(client_sock);
+}
+
+static int run_server(const std::string& host,
+                      uint16_t port,
+                      storage::Catalog& catalog,
+                      storage::TransactionManager& txn_manager,
+                      storage::LockManager& lock_manager,
+                      storage::WalManager& wal_manager) {
+    if (!init_socket_layer()) {
+        std::cout << "Error: failed to initialize socket layer.\n";
+        return 1;
+    }
+
+    SocketHandle listen_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_sock == INVALID_SOCKET_HANDLE) {
+        std::cout << "Error: failed to create server socket.\n";
+        shutdown_socket_layer();
+        return 1;
+    }
+
+    int reuse = 1;
+    setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (host == "0.0.0.0" || host == "*") {
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    } else if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+        std::cout << "Error: invalid --host value '" << host << "' (IPv4 only in v1).\n";
+        close_socket_handle(listen_sock);
+        shutdown_socket_layer();
+        return 1;
+    }
+
+    if (bind(listen_sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        std::cout << "Error: failed to bind " << host << ":" << port << "\n";
+        close_socket_handle(listen_sock);
+        shutdown_socket_layer();
+        return 1;
+    }
+    if (listen(listen_sock, 64) != 0) {
+        std::cout << "Error: failed to listen on " << host << ":" << port << "\n";
+        close_socket_handle(listen_sock);
+        shutdown_socket_layer();
+        return 1;
+    }
+
+    std::cout << "VDB server listening on " << host << ":" << port << "\n";
+    std::cout << "Session model: one session per remote endpoint (IP:port).\n";
+
+    std::mutex engine_mutex;
+    while (true) {
+        sockaddr_in peer{};
+        socklen_t peer_len = sizeof(peer);
+        SocketHandle client_sock = accept(listen_sock, reinterpret_cast<sockaddr*>(&peer), &peer_len);
+        if (client_sock == INVALID_SOCKET_HANDLE) {
+            continue;
+        }
+
+        char ip_buf[INET_ADDRSTRLEN] = {0};
+        const char* ntop = inet_ntop(AF_INET, &peer.sin_addr, ip_buf, sizeof(ip_buf));
+        std::string ip = ntop ? ntop : std::string("unknown");
+        uint16_t peer_port = ntohs(peer.sin_port);
+        std::string session_id = ip + ":" + std::to_string(peer_port);
+
+        std::thread(
+            handle_server_client,
+            client_sock,
+            session_id,
+            std::ref(catalog),
+            std::ref(txn_manager),
+            std::ref(lock_manager),
+            std::ref(wal_manager),
+            std::ref(engine_mutex)
+        ).detach();
+    }
+
+    close_socket_handle(listen_sock);
+    shutdown_socket_layer();
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     storage::Catalog catalog;
     storage::TransactionManager txn_manager;
@@ -1712,6 +1930,41 @@ int main(int argc, char* argv[]) {
     // If argument provided, run it as a script
     if (argc > 1) {
         std::string arg = argv[1];
+        if (arg == "--server") {
+            std::string host = "127.0.0.1";
+            uint16_t port = 54330;
+
+            for (int i = 2; i < argc; i++) {
+                std::string opt = argv[i];
+                if (opt == "--host") {
+                    if (i + 1 >= argc) {
+                        std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>]\n";
+                        return 1;
+                    }
+                    host = argv[++i];
+                    continue;
+                }
+                if (opt == "--port") {
+                    if (i + 1 >= argc) {
+                        std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>]\n";
+                        return 1;
+                    }
+                    int parsed_port = std::stoi(argv[++i]);
+                    if (parsed_port <= 0 || parsed_port > 65535) {
+                        std::cout << "Error: --port must be in range 1..65535\n";
+                        return 1;
+                    }
+                    port = static_cast<uint16_t>(parsed_port);
+                    continue;
+                }
+
+                std::cout << "Unknown server option: " << opt << "\n";
+                std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>]\n";
+                return 1;
+            }
+
+            return run_server(host, port, catalog, txn_manager, lock_manager, wal_manager);
+        }
         if (arg == "--generate") {
             size_t n = argc > 2 ? std::stoul(argv[2]) : 10000;
             benchmark::generate_employees(catalog, n);
