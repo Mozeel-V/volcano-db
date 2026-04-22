@@ -1,4 +1,5 @@
 const net = require("net");
+const crypto = require("crypto");
 
 class VDBProtocolError extends Error {
   constructor(message) {
@@ -73,7 +74,7 @@ class Connection {
     this._socket.on("close", () => this._rejectAll(new VDBProtocolError("Connection closed")));
   }
 
-  static connect({ host = "127.0.0.1", port = 54330, timeoutMs = 10000 } = {}) {
+  static connect({ host = "127.0.0.1", port = 54330, timeoutMs = 10000, user = null, password = "" } = {}) {
     return new Promise((resolve, reject) => {
       const socket = net.createConnection({ host, port });
       const timeout = setTimeout(() => {
@@ -96,6 +97,9 @@ class Connection {
             throw new VDBProtocolError(`Unexpected handshake: ${hello}, ${session}`);
           }
           conn.session = session.slice("SESSION ".length);
+          if (user) {
+            await conn.authenticate(user, password);
+          }
           resolve(conn);
         } catch (err) {
           socket.destroy();
@@ -152,6 +156,37 @@ class Connection {
   async ping() {
     await this._writeLine("PING");
     return (await this._readLine()) === "PONG";
+  }
+
+  async authenticate(user, password = "") {
+    await this._writeLine(`AUTH_START ${user}`);
+    const challenge = await this._readLine();
+    if (challenge.startsWith("AUTH_ERROR")) {
+        throw new VDBProtocolError(`Authentication failed: ${challenge}`);
+    }
+    if (!challenge.startsWith("AUTH_CHALLENGE ")) {
+      throw new VDBProtocolError(`Unexpected auth response: ${challenge}`);
+    }
+
+    const parts = challenge.split(/\s+/);
+    if (parts.length < 4) {
+      throw new VDBProtocolError(`Malformed auth challenge: ${challenge}`);
+    }
+    const saltHex = parts[1];
+    const nonce = parts[2];
+    const algo = String(parts[3] || "").toLowerCase();
+    if (algo !== "sha256") {
+      throw new VDBProtocolError(`Unsupported auth algorithm: ${algo}`);
+    }
+
+    const verifier = crypto.createHash("sha256").update(`${saltHex}${password}`, "utf8").digest("hex");
+    const proof = crypto.createHash("sha256").update(`${verifier}${nonce}`, "utf8").digest("hex");
+
+    await this._writeLine(`AUTH_PROOF ${proof}`);
+    const result = await this._readLine();
+    if (!result.startsWith("AUTH_OK ")) {
+      throw new VDBProtocolError(`Authentication failed: ${result}`);
+    }
   }
 
   cursor() {

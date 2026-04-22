@@ -42,10 +42,8 @@
 
 # Build output
 build/
-plan.*
-*.tex
-*.zip
 .vscode/
+.context/
 
 # Python cache
 __pycache__/

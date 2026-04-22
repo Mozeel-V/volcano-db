@@ -83,6 +83,18 @@ Run VolcanoDB as a TCP server:
 ./vdb --server --host 127.0.0.1 --port 54330
 ```
 
+Enable password mode:
+
+```bash
+./vdb --server --host 127.0.0.1 --port 54330 --auth-mode password
+```
+
+In password mode, the server bootstraps a superuser `admin` with password `admin` if missing. Change it immediately:
+
+```sql
+ALTER USER admin IDENTIFIED BY 'your_strong_password';
+```
+
 The server currently uses a text-based native protocol documented in [docs/protocol.md](docs/protocol.md).
 
 #### What the server does
@@ -98,6 +110,31 @@ The server currently uses a text-based native protocol documented in [docs/proto
   - `OK` or `ERROR` once statement execution finishes
   - `END` to terminate each response body
 6. Reuses the existing SQL engine pipeline (parser/planner/optimizer/executor).
+
+#### Authentication and authorization (current behavior)
+
+When running with `--auth-mode password`:
+
+1. Server-side auth handshake is required before SQL execution:
+  - `AUTH_START <username>`
+  - `AUTH_CHALLENGE <salt_hex> <nonce> sha256`
+  - `AUTH_PROOF <proof_hex>`
+  - `AUTH_OK <username>` or `AUTH_ERROR <reason>`
+2. Unauthenticated SQL requests are rejected with `auth_required`.
+3. SQL identity is principal-based (`username`) and is distinct from endpoint identity (`IP:port`).
+4. User and privilege SQL is supported:
+  - `CREATE USER ... IDENTIFIED BY ...`
+  - `ALTER USER ... IDENTIFIED BY ...`
+  - `DROP USER ...`
+  - `GRANT ... ON TABLE|VIEW|FUNCTION ... TO ...`
+  - `REVOKE ... ON TABLE|VIEW|FUNCTION ... FROM ...`
+5. In password mode, a bootstrap superuser `admin` is auto-created if missing.
+
+Current authorization enforcement:
+
+1. Enforced for `SELECT`/`EXPLAIN` table reads and for key DML/DDL paths (`INSERT`, `UPDATE`, `DELETE`, `CREATE INDEX`, `ALTER TABLE`, `DROP TABLE`, `DROP VIEW`, `DROP FUNCTION`).
+2. Superusers bypass privilege checks.
+3. Object owners are treated as authorized for their owned object.
 
 Protocol handshake example:
 
@@ -143,7 +180,8 @@ npm --prefix clients/node test
 2. Server bind host currently supports IPv4 values.
 3. SQL execution in server mode is serialized through a shared engine mutex.
 4. Runtime is memory-first: restart clears live state unless data is explicitly exported and reloaded.
-5. Production hardening features such as auth mode, request-size caps, idle timeout controls, and pool tuning flags are planned but not fully surfaced yet.
+5. `--auth-mode password` is implemented; request-size caps, idle timeout controls, and connection-limit flags are still planned.
+6. Non-QUIT dot commands are not part of the TCP SQL protocol surface.
 
 ### Quick start
 
@@ -298,6 +336,11 @@ CREATE INDEX <name> ON <table> (<col>) [USING HASH|BTREE];
 CREATE VIEW <name> AS <query>;
 CREATE MATERIALIZED VIEW <name> AS <query>;
 CREATE FUNCTION <name>(<param> <type>, ...) RETURNS <type> AS '<expr>';
+CREATE USER <name> IDENTIFIED BY '<password>';
+ALTER USER <name> IDENTIFIED BY '<password>';
+DROP USER <name>;
+GRANT <privileges> ON TABLE|VIEW|FUNCTION <object_name> TO <user>;
+REVOKE <privileges> ON TABLE|VIEW|FUNCTION <object_name> FROM <user>;
 INSERT INTO <table> VALUES (...);
 UPDATE <table> SET <col> = <expr> [WHERE <condition>];
 DELETE FROM <table> [WHERE <condition>];
@@ -396,23 +439,25 @@ make vdb_tests
 
 ### Test Organization
 
-Tests are organized across `tests/test_main.cpp` (core SQL logic) and `tests/test_commands.cpp` (CLI commands):
+Tests are organized across `tests/test_main.cpp` (core SQL logic), `tests/test_commands.cpp` (CLI commands), and `tests/test_server_integration.cpp` (server protocol/integration):
 
 | File | Primary focus | Representative tags |
 |------|---------------|---------------------|
 | `tests/test_main.cpp` | Parser, storage, planner/optimizer, executor internals, benchmark generators, WAL recovery, consistency and lock-isolation checks | `[parser]`, `[storage]`, `[planner]`, `[optimizer]`, `[executor]`, `[benchmark]`, `[lock]`, `[isolation]`, `[wal]`, `[durability]`, `[consistency]`, `[recovery]`, `[acid]` |
 | `tests/test_commands.cpp` | REPL/CLI behavior and end-to-end SQL workflows | `[e2e]`, `[commands]`, `[dml]`, `[ddl]`, `[alter]`, `[merge]`, `[constraint]`, `[trigger]`, `[transaction]`, `[durability]`, `[acid]` |
+| `tests/test_server_integration.cpp` | TCP server handshake/protocol behavior, multi-client flows, auth gating | `[server]`, `[integration]`, `[auth]` |
 
 Tag snapshot from `./vdb_tests --list-tags` (counts are per-tag and overlap across tests):
 
 | Area | Tag(s) | Cases |
 |------|--------|------:|
-| **Total suite** | `all` | **445** |
-| Parsing and grammar | `[parser]` | 108 |
+| **Total suite** | `all` | **455** |
+| Parsing and grammar | `[parser]` | 112 |
 | End-to-end SQL | `[e2e]` | 251 |
 | CLI and scripts | `[commands]` | 29 |
 | Storage core | `[storage]` | 38 |
 | Indexing | `[index]` | 21 |
+| Server/integration/auth | `[server]`, `[integration]`, `[auth]` | 6, 6, 5 |
 | ACID evidence matrix | `[acid]`, `[acid-a]`, `[acid-c]`, `[acid-i]`, `[acid-d]` | 19, 1, 3, 5, 11 |
 | Transactions | `[transaction]` | 19 |
 | Locking | `[lock]` | 10 |

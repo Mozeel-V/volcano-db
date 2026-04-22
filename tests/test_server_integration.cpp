@@ -80,9 +80,12 @@ public:
 
 class ServerProcess {
 public:
-    explicit ServerProcess(uint16_t port) {
+    explicit ServerProcess(uint16_t port, bool password_auth = false) {
 #ifdef _WIN32
         std::string cmd = ".\\vdb.exe --server --host 127.0.0.1 --port " + std::to_string(port);
+        if (password_auth) {
+            cmd += " --auth-mode password";
+        }
 
         STARTUPINFOA si{};
         PROCESS_INFORMATION pi{};
@@ -110,7 +113,11 @@ public:
         pid_ = fork();
         if (pid_ == 0) {
             std::string p = std::to_string(port);
-            execl("./vdb", "vdb", "--server", "--host", "127.0.0.1", "--port", p.c_str(), (char*)nullptr);
+            if (password_auth) {
+                execl("./vdb", "vdb", "--server", "--host", "127.0.0.1", "--port", p.c_str(), "--auth-mode", "password", (char*)nullptr);
+            } else {
+                execl("./vdb", "vdb", "--server", "--host", "127.0.0.1", "--port", p.c_str(), (char*)nullptr);
+            }
             _exit(127);
         }
         running_ = (pid_ > 0);
@@ -489,4 +496,64 @@ TEST_CASE("Server protocol: partial SQL yields CONTINUE and supports disconnect"
     REQUIRE(read_line(client2, line));
     CHECK(line == "BYE");
     close_socket_handle(client2);
+}
+
+TEST_CASE("Server protocol: password auth requires login", "[server][integration][auth]") {
+    DurabilityFileScope durability_scope;
+#ifdef _WIN32
+    WinSockScope ws;
+    REQUIRE(ws.ok());
+#endif
+
+    const uint16_t port = reserve_ephemeral_port();
+    REQUIRE(port != 0);
+
+    ServerProcess server(port, true);
+    REQUIRE(server.running());
+
+    SocketHandle client = connect_with_retry(port);
+    REQUIRE(client != kInvalidSocket);
+
+    std::string session;
+    REQUIRE(read_handshake(client, session));
+
+    REQUIRE(send_all(client, ".tables\n"));
+    std::string dot_status;
+    REQUIRE(read_line(client, dot_status));
+    CHECK(dot_status == "ERROR");
+    auto dot_body = read_until_end(client);
+    std::string dot_text;
+    for (const auto& line : dot_body) {
+        dot_text += line;
+        dot_text.push_back('\n');
+    }
+    CHECK_THAT(dot_text, Catch::Matchers::ContainsSubstring("auth_required"));
+
+    REQUIRE(send_all(client, "SELECT 1;\n"));
+    std::string status;
+    REQUIRE(read_line(client, status));
+    CHECK(status == "ERROR");
+    auto body = read_until_end(client);
+    std::string body_text;
+    for (const auto& line : body) {
+        body_text += line;
+        body_text.push_back('\n');
+    }
+    CHECK_THAT(body_text, Catch::Matchers::ContainsSubstring("auth_required"));
+
+    REQUIRE(send_all(client, "AUTH_START admin\n"));
+    std::string challenge;
+    REQUIRE(read_line(client, challenge));
+    CHECK_THAT(challenge, Catch::Matchers::StartsWith("AUTH_CHALLENGE "));
+
+    REQUIRE(send_all(client, "AUTH_PROOF deadbeef\n"));
+    std::string auth_err;
+    REQUIRE(read_line(client, auth_err));
+    CHECK_THAT(auth_err, Catch::Matchers::StartsWith("AUTH_ERROR "));
+
+    REQUIRE(send_all(client, "QUIT\n"));
+    std::string bye;
+    REQUIRE(read_line(client, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(client);
 }

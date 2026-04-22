@@ -266,6 +266,23 @@ struct CreateTriggerStmt {
     std::vector<std::string> action_sqls;  // SQL statements to execute when trigger fires
 };
 
+struct CreateUserStmt {
+    std::string username;
+    std::string password;
+};
+
+struct AlterUserStmt {
+    std::string username;
+    std::string password;
+};
+
+struct GrantRevokeStmt {
+    std::vector<std::string> privileges;
+    std::string object_type;   // TABLE | VIEW | FUNCTION
+    std::string object_name;
+    std::string grantee;
+};
+
 enum class StmtType {
     ST_SELECT,
     ST_BEGIN_TXN,
@@ -294,6 +311,11 @@ enum class StmtType {
     ST_MERGE,
     ST_CREATE_TRIGGER,
     ST_DROP_TRIGGER,
+    ST_CREATE_USER,
+    ST_ALTER_USER,
+    ST_DROP_USER,
+    ST_GRANT,
+    ST_REVOKE,
 };
 
 struct Statement {
@@ -310,6 +332,9 @@ struct Statement {
     std::shared_ptr<MergeStmt> merge;
     std::shared_ptr<CreateFunctionStmt> create_function;
     std::shared_ptr<CreateTriggerStmt> create_trigger;
+    std::shared_ptr<CreateUserStmt> create_user;
+    std::shared_ptr<AlterUserStmt> alter_user;
+    std::shared_ptr<GrantRevokeStmt> grant_revoke;
     std::string drop_name;  // name of table/index/view to drop, or table to truncate, or trigger to drop
     bool explain_analyze = false;
     bool explain_dot = false;

@@ -13,6 +13,9 @@
 #include <thread>
 #include <atomic>
 #include <cstring>
+#include <unordered_set>
+#include <random>
+#include <array>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -39,6 +42,11 @@
 #include "storage/transaction.h"
 #include "storage/wal.h"
 #include <functional>
+
+enum class ServerAuthMode {
+    NONE,
+    PASSWORD,
+};
 
 static storage::Value dml_eval(const ast::ExprPtr& e, const storage::Table* tbl, const storage::Row& row) {
     if (!e) return std::monostate{};
@@ -172,6 +180,101 @@ static std::string trim_copy(const std::string& s) {
 
 static bool starts_with(const std::string& value, const std::string& prefix) {
     return value.rfind(prefix, 0) == 0;
+}
+
+static std::string to_hex(const std::vector<uint8_t>& bytes) {
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.reserve(bytes.size() * 2);
+    for (uint8_t b : bytes) {
+        out.push_back(kHex[(b >> 4) & 0xF]);
+        out.push_back(kHex[b & 0xF]);
+    }
+    return out;
+}
+
+static std::vector<uint8_t> random_bytes(size_t count) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> dist(0, 255);
+    std::vector<uint8_t> out(count);
+    for (size_t i = 0; i < count; i++) out[i] = static_cast<uint8_t>(dist(gen));
+    return out;
+}
+
+static std::array<uint8_t, 32> sha256_bytes(const std::string& data) {
+    auto rotr = [](uint32_t x, uint32_t n) { return (x >> n) | (x << (32 - n)); };
+    auto ch = [](uint32_t x, uint32_t y, uint32_t z) { return (x & y) ^ (~x & z); };
+    auto maj = [](uint32_t x, uint32_t y, uint32_t z) { return (x & y) ^ (x & z) ^ (y & z); };
+    auto bsig0 = [&](uint32_t x) { return rotr(x, 2) ^ rotr(x, 13) ^ rotr(x, 22); };
+    auto bsig1 = [&](uint32_t x) { return rotr(x, 6) ^ rotr(x, 11) ^ rotr(x, 25); };
+    auto ssig0 = [&](uint32_t x) { return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3); };
+    auto ssig1 = [&](uint32_t x) { return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10); };
+
+    static const uint32_t k[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    };
+
+    uint32_t h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+    uint32_t h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+
+    std::vector<uint8_t> msg(data.begin(), data.end());
+    uint64_t bit_len = static_cast<uint64_t>(msg.size()) * 8ULL;
+    msg.push_back(0x80);
+    while ((msg.size() % 64) != 56) msg.push_back(0);
+    for (int i = 7; i >= 0; --i) msg.push_back(static_cast<uint8_t>((bit_len >> (i * 8)) & 0xFF));
+
+    for (size_t off = 0; off < msg.size(); off += 64) {
+        uint32_t w[64] = {0};
+        for (int i = 0; i < 16; i++) {
+            w[i] = (static_cast<uint32_t>(msg[off + i * 4]) << 24) |
+                   (static_cast<uint32_t>(msg[off + i * 4 + 1]) << 16) |
+                   (static_cast<uint32_t>(msg[off + i * 4 + 2]) << 8) |
+                   (static_cast<uint32_t>(msg[off + i * 4 + 3]));
+        }
+        for (int i = 16; i < 64; i++) {
+            w[i] = ssig1(w[i - 2]) + w[i - 7] + ssig0(w[i - 15]) + w[i - 16];
+        }
+
+        uint32_t a = h0, b = h1, c = h2, d = h3;
+        uint32_t e = h4, f = h5, g = h6, h = h7;
+        for (int i = 0; i < 64; i++) {
+            uint32_t t1 = h + bsig1(e) + ch(e, f, g) + k[i] + w[i];
+            uint32_t t2 = bsig0(a) + maj(a, b, c);
+            h = g; g = f; f = e; e = d + t1;
+            d = c; c = b; b = a; a = t1 + t2;
+        }
+        h0 += a; h1 += b; h2 += c; h3 += d;
+        h4 += e; h5 += f; h6 += g; h7 += h;
+    }
+
+    std::array<uint8_t, 32> out{};
+    uint32_t hv[8] = {h0,h1,h2,h3,h4,h5,h6,h7};
+    for (int i = 0; i < 8; i++) {
+        out[i * 4] = static_cast<uint8_t>((hv[i] >> 24) & 0xFF);
+        out[i * 4 + 1] = static_cast<uint8_t>((hv[i] >> 16) & 0xFF);
+        out[i * 4 + 2] = static_cast<uint8_t>((hv[i] >> 8) & 0xFF);
+        out[i * 4 + 3] = static_cast<uint8_t>(hv[i] & 0xFF);
+    }
+    return out;
+}
+
+static std::string sha256_hex(const std::string& data) {
+    const auto digest = sha256_bytes(data);
+    return to_hex(std::vector<uint8_t>(digest.begin(), digest.end()));
+}
+
+static std::pair<std::string, std::string> make_password_material(const std::string& password) {
+    const std::string salt_hex = to_hex(random_bytes(16));
+    const std::string verifier_hex = sha256_hex(salt_hex + password);
+    return {salt_hex, verifier_hex};
 }
 
 static std::string data_type_to_string(storage::DataType type) {
@@ -530,6 +633,11 @@ static const char* statement_type_name(ast::StmtType type) {
         case ast::StmtType::ST_MERGE: return "MERGE";
         case ast::StmtType::ST_CREATE_TRIGGER: return "CREATE_TRIGGER";
         case ast::StmtType::ST_DROP_TRIGGER: return "DROP_TRIGGER";
+        case ast::StmtType::ST_CREATE_USER: return "CREATE_USER";
+        case ast::StmtType::ST_ALTER_USER: return "ALTER_USER";
+        case ast::StmtType::ST_DROP_USER: return "DROP_USER";
+        case ast::StmtType::ST_GRANT: return "GRANT";
+        case ast::StmtType::ST_REVOKE: return "REVOKE";
         default: return "UNKNOWN";
     }
 }
@@ -558,6 +666,11 @@ static bool statement_allowed_in_transaction(ast::StmtType type) {
         case ast::StmtType::ST_BEGIN_TXN:
         case ast::StmtType::ST_COMMIT_TXN:
         case ast::StmtType::ST_ROLLBACK_TXN:
+        case ast::StmtType::ST_CREATE_USER:
+        case ast::StmtType::ST_ALTER_USER:
+        case ast::StmtType::ST_DROP_USER:
+        case ast::StmtType::ST_GRANT:
+        case ast::StmtType::ST_REVOKE:
             return true;
         default:
             return false;
@@ -587,9 +700,83 @@ static bool statement_mutates_catalog(ast::StmtType type) {
         case ast::StmtType::ST_MERGE:
         case ast::StmtType::ST_CREATE_TRIGGER:
         case ast::StmtType::ST_DROP_TRIGGER:
+        case ast::StmtType::ST_CREATE_USER:
+        case ast::StmtType::ST_ALTER_USER:
+        case ast::StmtType::ST_DROP_USER:
+        case ast::StmtType::ST_GRANT:
+        case ast::StmtType::ST_REVOKE:
             return true;
         default:
             return false;
+    }
+}
+
+static bool statement_requires_authorization(ast::StmtType type) {
+    switch (type) {
+        case ast::StmtType::ST_CREATE_USER:
+        case ast::StmtType::ST_ALTER_USER:
+        case ast::StmtType::ST_DROP_USER:
+        case ast::StmtType::ST_GRANT:
+        case ast::StmtType::ST_REVOKE:
+            return false;
+        default:
+            return statement_mutates_catalog(type) || type == ast::StmtType::ST_SELECT || type == ast::StmtType::ST_EXPLAIN;
+    }
+}
+
+static bool check_statement_authorization(const ast::Statement& stmt,
+                                          const storage::Catalog& catalog,
+                                          const std::string& current_user,
+                                          std::string& auth_error) {
+    if (current_user.empty()) {
+        auth_error = "auth_required: no authenticated user";
+        return false;
+    }
+
+    auto require = [&](const std::string& object_type,
+                       const std::string& object_name,
+                       storage::Catalog::Privilege privilege) {
+        if (!catalog.has_privilege(current_user, object_type, object_name, privilege)) {
+            auth_error = "permission_denied: user '" + current_user + "' lacks " +
+                         storage::privilege_to_string(privilege) + " on " + object_type + " " + object_name;
+            return false;
+        }
+        return true;
+    };
+
+    switch (stmt.type) {
+        case ast::StmtType::ST_SELECT:
+        case ast::StmtType::ST_EXPLAIN: {
+            if (!stmt.select) return true;
+            auto tables = collect_tables_from_select(*stmt.select);
+            for (const auto& table : tables) {
+                if (!require("TABLE", table, storage::Catalog::Privilege::PRIV_SELECT)) return false;
+            }
+            return true;
+        }
+        case ast::StmtType::ST_INSERT:
+            return stmt.insert ? require("TABLE", stmt.insert->table_name, storage::Catalog::Privilege::PRIV_INSERT) : true;
+        case ast::StmtType::ST_UPDATE:
+            return stmt.update ? require("TABLE", stmt.update->table_name, storage::Catalog::Privilege::PRIV_UPDATE) : true;
+        case ast::StmtType::ST_DELETE:
+            return stmt.del ? require("TABLE", stmt.del->table_name, storage::Catalog::Privilege::PRIV_DELETE) : true;
+        case ast::StmtType::ST_CREATE_INDEX:
+            return stmt.create_index ? require("TABLE", stmt.create_index->table_name, storage::Catalog::Privilege::PRIV_ALTER) : true;
+        case ast::StmtType::ST_ALTER_ADD_COL:
+        case ast::StmtType::ST_ALTER_DROP_COL:
+        case ast::StmtType::ST_ALTER_RENAME_COL:
+        case ast::StmtType::ST_ALTER_RENAME_TBL:
+            return stmt.alter ? require("TABLE", stmt.alter->table_name, storage::Catalog::Privilege::PRIV_ALTER) : true;
+        case ast::StmtType::ST_DROP_TABLE:
+            return require("TABLE", stmt.drop_name, storage::Catalog::Privilege::PRIV_DROP);
+        case ast::StmtType::ST_DROP_VIEW:
+            return require("VIEW", stmt.drop_name, storage::Catalog::Privilege::PRIV_DROP);
+        case ast::StmtType::ST_CREATE_FUNCTION:
+            return true;
+        case ast::StmtType::ST_DROP_FUNCTION:
+            return require("FUNCTION", stmt.drop_name, storage::Catalog::Privilege::PRIV_DROP);
+        default:
+            return true;
     }
 }
 
@@ -597,7 +784,9 @@ static bool execute_sql(const std::string& sql,
                         storage::Catalog& catalog,
                         storage::TransactionManager& txn_manager,
                         storage::LockManager& lock_manager,
-                        storage::WalManager& wal_manager) {
+                        storage::WalManager& wal_manager,
+                        const std::string& current_user = "local_admin",
+                        bool enforce_authorization = false) {
     auto stmt = ast::parse_sql(sql);
     if (!stmt) {
         std::cout << "Error: failed to parse query\n";
@@ -617,6 +806,14 @@ static bool execute_sql(const std::string& sql,
     };
 
     bool checkpoint_after_statement = false;
+
+    if (enforce_authorization && statement_requires_authorization(stmt->type)) {
+        std::string auth_error;
+        if (!check_statement_authorization(*stmt, catalog, current_user, auth_error)) {
+            std::cout << "Error: " << auth_error << "\n";
+            return false;
+        }
+    }
 
     if (txn_manager.in_transaction() && !statement_allowed_in_transaction(stmt->type)) {
         std::cout << "Error: statement '" << statement_type_name(stmt->type)
@@ -700,6 +897,7 @@ static bool execute_sql(const std::string& sql,
                         catalog.create_index(idx_name, ct.table_name, cs.name, false);
                     }
                 }
+                catalog.set_object_owner("TABLE", ct.table_name, current_user);
                 std::cout << "Table '" << ct.table_name << "' created.\n";
                 break;
             }
@@ -714,6 +912,7 @@ static bool execute_sql(const std::string& sql,
                     throw std::runtime_error("Relation already exists: " + cv.view_name);
                 }
                 catalog.add_view(cv.view_name, cv.query, false);
+                catalog.set_object_owner("VIEW", cv.view_name, current_user);
                 std::cout << "View '" << cv.view_name << "' created.\n";
                 break;
             }
@@ -729,6 +928,7 @@ static bool execute_sql(const std::string& sql,
                     auto mat_tbl = executor::materialize_select_to_table(cv.view_name, *cv.query, catalog);
                     catalog.add_table(mat_tbl);
                     catalog.add_view(cv.view_name, cv.query, true);
+                    catalog.set_object_owner("VIEW", cv.view_name, current_user);
                     executor::cleanup_temporary_views(catalog, temp_tables);
                     std::cout << "Materialized view '" << cv.view_name << "' created ("
                               << mat_tbl->rows.size() << " rows).\n";
@@ -768,7 +968,75 @@ static bool execute_sql(const std::string& sql,
                 }
 
                 catalog.add_function(fn);
+                catalog.set_object_owner("FUNCTION", cf.function_name, current_user);
                 std::cout << "Function '" << cf.function_name << "' created.\n";
+                break;
+            }
+            case ast::StmtType::ST_CREATE_USER: {
+                if (current_user != "local_admin") {
+                    const auto* user = catalog.get_user(current_user);
+                    if (!user || !user->is_superuser) {
+                        throw std::runtime_error("permission_denied: only superuser can CREATE USER");
+                    }
+                }
+                auto& cu = *stmt->create_user;
+                auto [salt_hex, verifier_hex] = make_password_material(cu.password);
+                catalog.add_user(cu.username, salt_hex, verifier_hex, false);
+                std::cout << "User '" << cu.username << "' created.\n";
+                break;
+            }
+            case ast::StmtType::ST_ALTER_USER: {
+                if (current_user != "local_admin") {
+                    const auto* user = catalog.get_user(current_user);
+                    if (!user || (!user->is_superuser &&
+                                  storage::normalize_identifier_key(current_user) !=
+                                  storage::normalize_identifier_key(stmt->alter_user->username))) {
+                        throw std::runtime_error("permission_denied: cannot ALTER USER for this principal");
+                    }
+                }
+                auto& au = *stmt->alter_user;
+                auto [salt_hex, verifier_hex] = make_password_material(au.password);
+                if (!catalog.alter_user_password(au.username, salt_hex, verifier_hex)) {
+                    throw std::runtime_error("User not found: " + au.username);
+                }
+                std::cout << "User '" << au.username << "' updated.\n";
+                break;
+            }
+            case ast::StmtType::ST_DROP_USER: {
+                if (current_user != "local_admin") {
+                    const auto* user = catalog.get_user(current_user);
+                    if (!user || !user->is_superuser) {
+                        throw std::runtime_error("permission_denied: only superuser can DROP USER");
+                    }
+                }
+                if (!catalog.drop_user(stmt->drop_name)) {
+                    throw std::runtime_error("User not found: " + stmt->drop_name);
+                }
+                std::cout << "User '" << stmt->drop_name << "' dropped.\n";
+                break;
+            }
+            case ast::StmtType::ST_GRANT:
+            case ast::StmtType::ST_REVOKE: {
+                if (current_user != "local_admin") {
+                    const auto* user = catalog.get_user(current_user);
+                    if (!user || !user->is_superuser) {
+                        throw std::runtime_error("permission_denied: only superuser can manage grants");
+                    }
+                }
+                auto& gr = *stmt->grant_revoke;
+                std::unordered_set<storage::Catalog::Privilege> privileges;
+                for (const auto& p : gr.privileges) {
+                    privileges.insert(storage::privilege_from_string(p));
+                }
+                if (stmt->type == ast::StmtType::ST_GRANT) {
+                    catalog.grant_privileges(current_user, gr.grantee, gr.object_type, gr.object_name, privileges);
+                    std::cout << "Granted privileges on " << gr.object_type << " '" << gr.object_name
+                              << "' to '" << gr.grantee << "'.\n";
+                } else {
+                    catalog.revoke_privileges(gr.grantee, gr.object_type, gr.object_name, privileges);
+                    std::cout << "Revoked privileges on " << gr.object_type << " '" << gr.object_name
+                              << "' from '" << gr.grantee << "'.\n";
+                }
                 break;
             }
             case ast::StmtType::ST_INSERT: {
@@ -783,7 +1051,7 @@ static bool execute_sql(const std::string& sql,
                 // We fire BEFORE INSERT triggers
                 for (auto* td : catalog.get_triggers(ins.table_name, storage::TriggerDef::ON_INSERT)) {
                     if (td->when == storage::TriggerDef::BEFORE) {
-                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager, current_user, enforce_authorization);
                     }
                 }
 
@@ -857,7 +1125,7 @@ static bool execute_sql(const std::string& sql,
                 // We fire AFTER INSERT triggers
                 for (auto* td : catalog.get_triggers(ins.table_name, storage::TriggerDef::ON_INSERT)) {
                     if (td->when == storage::TriggerDef::AFTER) {
-                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager, current_user, enforce_authorization);
                     }
                 }
 
@@ -876,7 +1144,7 @@ static bool execute_sql(const std::string& sql,
                 // We fire BEFORE UPDATE triggers
                 for (auto* td : catalog.get_triggers(upd.table_name, storage::TriggerDef::ON_UPDATE)) {
                     if (td->when == storage::TriggerDef::BEFORE) {
-                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager, current_user, enforce_authorization);
                     }
                 }
 
@@ -968,7 +1236,7 @@ static bool execute_sql(const std::string& sql,
                 // We fire AFTER UPDATE triggers
                 for (auto* td : catalog.get_triggers(upd.table_name, storage::TriggerDef::ON_UPDATE)) {
                     if (td->when == storage::TriggerDef::AFTER) {
-                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager, current_user, enforce_authorization);
                     }
                 }
 
@@ -987,7 +1255,7 @@ static bool execute_sql(const std::string& sql,
                 // We fire BEFORE DELETE triggers
                 for (auto* td : catalog.get_triggers(del.table_name, storage::TriggerDef::ON_DELETE)) {
                     if (td->when == storage::TriggerDef::BEFORE) {
-                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager, current_user, enforce_authorization);
                     }
                 }
 
@@ -1029,7 +1297,7 @@ static bool execute_sql(const std::string& sql,
                 // We fire AFTER DELETE triggers
                 for (auto* td : catalog.get_triggers(del.table_name, storage::TriggerDef::ON_DELETE)) {
                     if (td->when == storage::TriggerDef::AFTER) {
-                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+                        for (auto& sql : td->action_sqls) execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager, current_user, enforce_authorization);
                     }
                 }
 
@@ -1750,11 +2018,14 @@ static bool execute_sql_with_capture(const std::string& sql,
                                      storage::LockManager& lock_manager,
                                      storage::WalManager& wal_manager,
                                      std::mutex& engine_mutex,
+                                     const std::string& current_user,
+                                     bool enforce_authorization,
                                      std::string& captured) {
     std::lock_guard<std::mutex> guard(engine_mutex);
     std::ostringstream oss;
     auto* old_buf = std::cout.rdbuf(oss.rdbuf());
-    bool ok = execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager);
+    bool ok = execute_sql(sql, catalog, txn_manager, lock_manager, wal_manager,
+                          current_user, enforce_authorization);
     std::cout.rdbuf(old_buf);
     captured = oss.str();
     return ok;
@@ -1766,7 +2037,8 @@ static void handle_server_client(SocketHandle client_sock,
                                  storage::TransactionManager& txn_manager,
                                  storage::LockManager& lock_manager,
                                  storage::WalManager& wal_manager,
-                                 std::mutex& engine_mutex) {
+                                 std::mutex& engine_mutex,
+                                 ServerAuthMode auth_mode) {
     std::string hello = "HELLO VDB\nSESSION " + session_id + "\n";
     if (!send_all(client_sock, hello)) {
         close_socket_handle(client_sock);
@@ -1775,6 +2047,9 @@ static void handle_server_client(SocketHandle client_sock,
 
     std::string recv_buffer;
     std::string sql_buffer;
+    std::string auth_user = "anonymous";
+    std::string auth_nonce;
+    bool authenticated = (auth_mode == ServerAuthMode::NONE);
     char tmp[4096];
 
     while (true) {
@@ -1795,9 +2070,69 @@ static void handle_server_client(SocketHandle client_sock,
                 if (!send_all(client_sock, "PONG\n")) goto client_done;
                 continue;
             }
+
+            if (starts_with(cmd, "AUTH_START ")) {
+                if (auth_mode != ServerAuthMode::PASSWORD) {
+                    if (!send_all(client_sock, "AUTH_ERROR auth_not_enabled\n")) goto client_done;
+                    continue;
+                }
+                auth_user = trim_copy(cmd.substr(std::string("AUTH_START ").size()));
+                auto* user = catalog.get_user(auth_user);
+                if (!user || user->is_locked) {
+                    auth_nonce = to_hex(random_bytes(16));
+                    if (!send_all(client_sock, "AUTH_ERROR auth_failed\n")) goto client_done;
+                    continue;
+                }
+                auth_nonce = to_hex(random_bytes(16));
+                std::string challenge = "AUTH_CHALLENGE " + user->salt_hex + " " + auth_nonce + " sha256\n";
+                if (!send_all(client_sock, challenge)) goto client_done;
+                continue;
+            }
+
+            if (starts_with(cmd, "AUTH_PROOF ")) {
+                if (auth_mode != ServerAuthMode::PASSWORD) {
+                    if (!send_all(client_sock, "AUTH_ERROR auth_not_enabled\n")) goto client_done;
+                    continue;
+                }
+                if (auth_nonce.empty() || auth_user.empty()) {
+                    if (!send_all(client_sock, "AUTH_ERROR auth_nonce_expired\n")) goto client_done;
+                    continue;
+                }
+                const std::string proof = trim_copy(cmd.substr(std::string("AUTH_PROOF ").size()));
+                auto* user = catalog.get_user(auth_user);
+                if (!user || user->is_locked) {
+                    auth_nonce.clear();
+                    if (!send_all(client_sock, "AUTH_ERROR auth_failed\n")) goto client_done;
+                    continue;
+                }
+                const std::string expected = sha256_hex(user->password_verifier_hex + auth_nonce);
+                auth_nonce.clear();
+                if (proof != expected) {
+                    if (!send_all(client_sock, "AUTH_ERROR auth_failed\n")) goto client_done;
+                    continue;
+                }
+                authenticated = true;
+                if (!send_all(client_sock, "AUTH_OK " + auth_user + "\n")) goto client_done;
+                continue;
+            }
+
             if (cmd == "QUIT" || cmd == ".quit" || cmd == ".exit") {
                 send_all(client_sock, "BYE\n");
                 goto client_done;
+            }
+
+            if (!cmd.empty() && cmd.front() == '.') {
+                if (auth_mode == ServerAuthMode::PASSWORD && !authenticated) {
+                    if (!send_all(client_sock, "ERROR\nauth_required\nEND\n")) goto client_done;
+                } else {
+                    if (!send_all(client_sock, "ERROR\ndot_command_not_supported\nEND\n")) goto client_done;
+                }
+                continue;
+            }
+
+            if (auth_mode == ServerAuthMode::PASSWORD && !authenticated) {
+                if (!send_all(client_sock, "ERROR\nauth_required\nEND\n")) goto client_done;
+                continue;
             }
 
             if (!sql_buffer.empty()) sql_buffer += " ";
@@ -1809,7 +2144,9 @@ static void handle_server_client(SocketHandle client_sock,
 
             std::string captured;
             bool ok = execute_sql_with_capture(sql_buffer, catalog, txn_manager, lock_manager, wal_manager,
-                                               engine_mutex, captured);
+                                               engine_mutex, auth_user,
+                                               auth_mode == ServerAuthMode::PASSWORD,
+                                               captured);
             sql_buffer.clear();
 
             if (!send_all(client_sock, ok ? "OK\n" : "ERROR\n")) goto client_done;
@@ -1827,7 +2164,8 @@ static int run_server(const std::string& host,
                       storage::Catalog& catalog,
                       storage::TransactionManager& txn_manager,
                       storage::LockManager& lock_manager,
-                      storage::WalManager& wal_manager) {
+                      storage::WalManager& wal_manager,
+                      ServerAuthMode auth_mode) {
     if (!init_socket_layer()) {
         std::cout << "Error: failed to initialize socket layer.\n";
         return 1;
@@ -1871,6 +2209,7 @@ static int run_server(const std::string& host,
 
     std::cout << "VDB server listening on " << host << ":" << port << "\n";
     std::cout << "Session model: one session per remote endpoint (IP:port).\n";
+    std::cout << "Auth mode: " << (auth_mode == ServerAuthMode::PASSWORD ? "password" : "none") << "\n";
 
     std::mutex engine_mutex;
     while (true) {
@@ -1895,7 +2234,8 @@ static int run_server(const std::string& host,
             std::ref(txn_manager),
             std::ref(lock_manager),
             std::ref(wal_manager),
-            std::ref(engine_mutex)
+            std::ref(engine_mutex),
+            auth_mode
         ).detach();
     }
 
@@ -1933,6 +2273,7 @@ int main(int argc, char* argv[]) {
         if (arg == "--server") {
             std::string host = "127.0.0.1";
             uint16_t port = 54330;
+            ServerAuthMode auth_mode = ServerAuthMode::NONE;
 
             for (int i = 2; i < argc; i++) {
                 std::string opt = argv[i];
@@ -1957,13 +2298,35 @@ int main(int argc, char* argv[]) {
                     port = static_cast<uint16_t>(parsed_port);
                     continue;
                 }
+                if (opt == "--auth-mode") {
+                    if (i + 1 >= argc) {
+                        std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>] [--auth-mode none|password]\n";
+                        return 1;
+                    }
+                    std::string mode = trim_copy(argv[++i]);
+                    if (mode == "none") {
+                        auth_mode = ServerAuthMode::NONE;
+                    } else if (mode == "password") {
+                        auth_mode = ServerAuthMode::PASSWORD;
+                    } else {
+                        std::cout << "Error: --auth-mode must be 'none' or 'password'\n";
+                        return 1;
+                    }
+                    continue;
+                }
 
                 std::cout << "Unknown server option: " << opt << "\n";
-                std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>]\n";
+                std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>] [--auth-mode none|password]\n";
                 return 1;
             }
 
-            return run_server(host, port, catalog, txn_manager, lock_manager, wal_manager);
+            if (auth_mode == ServerAuthMode::PASSWORD && !catalog.get_user("admin")) {
+                auto [salt_hex, verifier_hex] = make_password_material("admin");
+                catalog.add_user("admin", salt_hex, verifier_hex, true);
+                std::cout << "Bootstrapped superuser 'admin' with default password 'admin' (change immediately).\n";
+            }
+
+            return run_server(host, port, catalog, txn_manager, lock_manager, wal_manager, auth_mode);
         }
         if (arg == "--generate") {
             size_t n = argc > 2 ? std::stoul(argv[2]) : 10000;

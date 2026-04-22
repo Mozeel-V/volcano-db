@@ -6,11 +6,40 @@
 
 namespace storage {
 
-static std::string normalize_identifier_key(const std::string& name) {
+std::string normalize_identifier_key(const std::string& name) {
     std::string key = name;
     std::transform(key.begin(), key.end(), key.begin(),
                    [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     return key;
+}
+
+static std::string normalize_object_key(const std::string& object_type, const std::string& object_name) {
+    return normalize_identifier_key(object_type) + ":" + normalize_identifier_key(object_name);
+}
+
+Catalog::Privilege privilege_from_string(const std::string& privilege_name) {
+    const std::string p = normalize_identifier_key(privilege_name);
+    if (p == "SELECT") return Catalog::Privilege::PRIV_SELECT;
+    if (p == "INSERT") return Catalog::Privilege::PRIV_INSERT;
+    if (p == "UPDATE") return Catalog::Privilege::PRIV_UPDATE;
+    if (p == "DELETE") return Catalog::Privilege::PRIV_DELETE;
+    if (p == "ALTER") return Catalog::Privilege::PRIV_ALTER;
+    if (p == "DROP") return Catalog::Privilege::PRIV_DROP;
+    if (p == "EXECUTE") return Catalog::Privilege::PRIV_EXECUTE;
+    throw std::runtime_error("Unknown privilege: " + privilege_name);
+}
+
+std::string privilege_to_string(Catalog::Privilege privilege) {
+    switch (privilege) {
+        case Catalog::Privilege::PRIV_SELECT: return "SELECT";
+        case Catalog::Privilege::PRIV_INSERT: return "INSERT";
+        case Catalog::Privilege::PRIV_UPDATE: return "UPDATE";
+        case Catalog::Privilege::PRIV_DELETE: return "DELETE";
+        case Catalog::Privilege::PRIV_ALTER: return "ALTER";
+        case Catalog::Privilege::PRIV_DROP: return "DROP";
+        case Catalog::Privilege::PRIV_EXECUTE: return "EXECUTE";
+        default: return "UNKNOWN";
+    }
 }
 
 void Catalog::add_table(std::shared_ptr<Table> table) {
@@ -63,6 +92,136 @@ const Catalog::FunctionDef* Catalog::get_function(const std::string& name) const
 
 bool Catalog::drop_function(const std::string& name) {
     return functions.erase(normalize_identifier_key(name)) > 0;
+}
+
+void Catalog::add_user(const std::string& username,
+                       const std::string& salt_hex,
+                       const std::string& password_verifier_hex,
+                       bool is_superuser) {
+    const std::string key = normalize_identifier_key(username);
+    if (users.find(key) != users.end()) {
+        throw std::runtime_error("User already exists: " + username);
+    }
+    auto user = std::make_shared<UserDef>();
+    user->username = username;
+    user->salt_hex = salt_hex;
+    user->password_verifier_hex = password_verifier_hex;
+    user->is_superuser = is_superuser;
+    users[key] = std::move(user);
+}
+
+bool Catalog::alter_user_password(const std::string& username,
+                                  const std::string& salt_hex,
+                                  const std::string& password_verifier_hex) {
+    auto* user = get_user(username);
+    if (!user) return false;
+    user->salt_hex = salt_hex;
+    user->password_verifier_hex = password_verifier_hex;
+    return true;
+}
+
+bool Catalog::drop_user(const std::string& username) {
+    const std::string key = normalize_identifier_key(username);
+    if (users.erase(key) == 0) return false;
+
+    for (auto it = privilege_entries.begin(); it != privilege_entries.end();) {
+        if (normalize_identifier_key(it->second->grantee) == key) {
+            it = privilege_entries.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    return true;
+}
+
+Catalog::UserDef* Catalog::get_user(const std::string& username) {
+    auto it = users.find(normalize_identifier_key(username));
+    if (it == users.end()) return nullptr;
+    return it->second.get();
+}
+
+const Catalog::UserDef* Catalog::get_user(const std::string& username) const {
+    auto it = users.find(normalize_identifier_key(username));
+    if (it == users.end()) return nullptr;
+    return it->second.get();
+}
+
+void Catalog::grant_privileges(const std::string& grantor,
+                               const std::string& grantee,
+                               const std::string& object_type,
+                               const std::string& object_name,
+                               const std::unordered_set<Privilege>& privileges) {
+    const std::string grantee_key = normalize_identifier_key(grantee);
+    if (users.find(grantee_key) == users.end()) {
+        throw std::runtime_error("User not found: " + grantee);
+    }
+
+    const std::string obj_key = normalize_object_key(object_type, object_name);
+    auto it = privilege_entries.find(grantee_key + "|" + obj_key);
+    if (it == privilege_entries.end()) {
+        auto pe = std::make_shared<PrivilegeEntry>();
+        pe->grantee = grantee;
+        pe->grantor = grantor;
+        pe->object_type = normalize_identifier_key(object_type);
+        pe->object_name = object_name;
+        pe->privileges = privileges;
+        privilege_entries[grantee_key + "|" + obj_key] = std::move(pe);
+        return;
+    }
+    for (auto p : privileges) {
+        it->second->privileges.insert(p);
+    }
+}
+
+void Catalog::revoke_privileges(const std::string& grantee,
+                                const std::string& object_type,
+                                const std::string& object_name,
+                                const std::unordered_set<Privilege>& privileges) {
+    const std::string grantee_key = normalize_identifier_key(grantee);
+    const std::string obj_key = normalize_object_key(object_type, object_name);
+    const std::string entry_key = grantee_key + "|" + obj_key;
+    auto it = privilege_entries.find(entry_key);
+    if (it == privilege_entries.end()) return;
+    for (auto p : privileges) {
+        it->second->privileges.erase(p);
+    }
+    if (it->second->privileges.empty()) {
+        privilege_entries.erase(it);
+    }
+}
+
+bool Catalog::has_privilege(const std::string& username,
+                            const std::string& object_type,
+                            const std::string& object_name,
+                            Privilege privilege) const {
+    const auto* user = get_user(username);
+    if (!user) return false;
+    if (user->is_locked) return false;
+    if (user->is_superuser) return true;
+
+    const std::string owner = get_object_owner(object_type, object_name);
+    if (!owner.empty() && normalize_identifier_key(owner) == normalize_identifier_key(username)) {
+        return true;
+    }
+
+    const std::string entry_key = normalize_identifier_key(username) + "|" +
+                                  normalize_object_key(object_type, object_name);
+    auto it = privilege_entries.find(entry_key);
+    if (it == privilege_entries.end()) return false;
+    return it->second->privileges.find(privilege) != it->second->privileges.end();
+}
+
+void Catalog::set_object_owner(const std::string& object_type,
+                               const std::string& object_name,
+                               const std::string& owner) {
+    object_owners[normalize_object_key(object_type, object_name)] = owner;
+}
+
+std::string Catalog::get_object_owner(const std::string& object_type,
+                                      const std::string& object_name) const {
+    auto it = object_owners.find(normalize_object_key(object_type, object_name));
+    if (it == object_owners.end()) return "";
+    return it->second;
 }
 
 void Catalog::create_index(const std::string& idx_name, const std::string& table_name,

@@ -229,6 +229,51 @@ TEST_CASE("Parser: CREATE MATERIALIZED VIEW", "[parser][ddl]") {
     REQUIRE(stmt->create_view->query != nullptr);
 }
 
+TEST_CASE("Parser: CREATE USER", "[parser][auth]") {
+    auto stmt = ast::parse_sql("CREATE USER alice IDENTIFIED BY 'secret';");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_CREATE_USER);
+    REQUIRE(stmt->create_user != nullptr);
+    CHECK(stmt->create_user->username == "alice");
+    CHECK(stmt->create_user->password == "secret");
+}
+
+TEST_CASE("Parser: ALTER USER", "[parser][auth]") {
+    auto stmt = ast::parse_sql("ALTER USER alice IDENTIFIED BY 'new_secret';");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_ALTER_USER);
+    REQUIRE(stmt->alter_user != nullptr);
+    CHECK(stmt->alter_user->username == "alice");
+    CHECK(stmt->alter_user->password == "new_secret");
+}
+
+TEST_CASE("Parser: DROP USER", "[parser][auth]") {
+    auto stmt = ast::parse_sql("DROP USER alice;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_DROP_USER);
+    CHECK(stmt->drop_name == "alice");
+}
+
+TEST_CASE("Parser: GRANT and REVOKE", "[parser][auth]") {
+    auto grant_stmt = ast::parse_sql("GRANT SELECT, INSERT ON TABLE employees TO alice;");
+    REQUIRE(grant_stmt != nullptr);
+    REQUIRE(grant_stmt->type == ast::StmtType::ST_GRANT);
+    REQUIRE(grant_stmt->grant_revoke != nullptr);
+    CHECK(grant_stmt->grant_revoke->object_type == "TABLE");
+    CHECK(grant_stmt->grant_revoke->object_name == "employees");
+    CHECK(grant_stmt->grant_revoke->grantee == "alice");
+    REQUIRE(grant_stmt->grant_revoke->privileges.size() == 2);
+
+    auto revoke_stmt = ast::parse_sql("REVOKE EXECUTE ON FUNCTION add1 FROM alice;");
+    REQUIRE(revoke_stmt != nullptr);
+    REQUIRE(revoke_stmt->type == ast::StmtType::ST_REVOKE);
+    REQUIRE(revoke_stmt->grant_revoke != nullptr);
+    CHECK(revoke_stmt->grant_revoke->object_type == "FUNCTION");
+    CHECK(revoke_stmt->grant_revoke->object_name == "add1");
+    CHECK(revoke_stmt->grant_revoke->grantee == "alice");
+    REQUIRE(revoke_stmt->grant_revoke->privileges.size() == 1);
+}
+
 TEST_CASE("Parser: CREATE FUNCTION", "[parser][ddl][function]") {
     auto stmt = ast::parse_sql("CREATE FUNCTION add1(x INT) RETURNS INT AS 'x + 1';");
     REQUIRE(stmt != nullptr);

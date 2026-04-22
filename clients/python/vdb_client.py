@@ -1,4 +1,5 @@
 import socket
+import hashlib
 from typing import List, Optional, Tuple
 
 
@@ -26,13 +27,20 @@ class Cursor:
 
 
 class Connection:
-    def __init__(self, host: str = "127.0.0.1", port: int = 54330, timeout: float = 10.0):
+    def __init__(self,
+                 host: str = "127.0.0.1",
+                 port: int = 54330,
+                 timeout: float = 10.0,
+                 user: Optional[str] = None,
+                 password: Optional[str] = None):
         self.host = host
         self.port = port
         self.timeout = timeout
         self._sock = socket.create_connection((host, port), timeout=timeout)
         self._file = self._sock.makefile("rwb", buffering=0)
         self.session = self._read_handshake()
+        if user is not None:
+            self._authenticate(user=user, password=password or "")
 
     def _readline(self) -> str:
         raw = self._file.readline()
@@ -54,6 +62,30 @@ class Connection:
     def ping(self) -> bool:
         self._writeline("PING")
         return self._readline() == "PONG"
+
+    def _authenticate(self, user: str, password: str) -> None:
+        self._writeline(f"AUTH_START {user}")
+        line = self._readline()
+        if line.startswith("AUTH_ERROR"):
+            raise VDBProtocolError(f"Authentication failed: {line}")
+        if not line.startswith("AUTH_CHALLENGE "):
+            raise VDBProtocolError(f"Unexpected auth response: {line!r}")
+
+        parts = line.split()
+        if len(parts) < 4:
+            raise VDBProtocolError(f"Malformed auth challenge: {line!r}")
+        salt_hex = parts[1]
+        nonce = parts[2]
+        algo = parts[3].lower()
+        if algo != "sha256":
+            raise VDBProtocolError(f"Unsupported auth algorithm: {algo}")
+
+        verifier = hashlib.sha256((salt_hex + password).encode("utf-8")).hexdigest()
+        proof = hashlib.sha256((verifier + nonce).encode("utf-8")).hexdigest()
+        self._writeline(f"AUTH_PROOF {proof}")
+        result = self._readline()
+        if not result.startswith("AUTH_OK "):
+            raise VDBProtocolError(f"Authentication failed: {result}")
 
     def cursor(self) -> Cursor:
         return Cursor(self)
@@ -110,5 +142,9 @@ class Connection:
         self.close()
 
 
-def connect(host: str = "127.0.0.1", port: int = 54330, timeout: float = 10.0) -> Connection:
-    return Connection(host=host, port=port, timeout=timeout)
+def connect(host: str = "127.0.0.1",
+            port: int = 54330,
+            timeout: float = 10.0,
+            user: Optional[str] = None,
+            password: Optional[str] = None) -> Connection:
+    return Connection(host=host, port=port, timeout=timeout, user=user, password=password)

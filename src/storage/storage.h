@@ -129,6 +129,32 @@ struct TriggerDef {
 
 class Catalog {
 public:
+    enum class Privilege {
+        PRIV_SELECT,
+        PRIV_INSERT,
+        PRIV_UPDATE,
+        PRIV_DELETE,
+        PRIV_ALTER,
+        PRIV_DROP,
+        PRIV_EXECUTE,
+    };
+
+    struct UserDef {
+        std::string username;
+        std::string salt_hex;
+        std::string password_verifier_hex;
+        bool is_superuser = false;
+        bool is_locked = false;
+    };
+
+    struct PrivilegeEntry {
+        std::string grantee;
+        std::string object_type;
+        std::string object_name;
+        std::string grantor;
+        std::unordered_set<Privilege> privileges;
+    };
+
     struct ViewDef {
         std::shared_ptr<ast::SelectStmt> query;
         bool materialized = false;
@@ -151,6 +177,9 @@ public:
     std::unordered_map<std::string, std::shared_ptr<BTreeIndex>> btree_indexes; // key: "table.column"
     std::unordered_map<std::string, std::shared_ptr<ViewDef>> views;
     std::unordered_map<std::string, std::shared_ptr<FunctionDef>> functions;
+    std::unordered_map<std::string, std::shared_ptr<UserDef>> users;
+    std::unordered_map<std::string, std::shared_ptr<PrivilegeEntry>> privilege_entries;
+    std::unordered_map<std::string, std::string> object_owners;
 
     void add_table(std::shared_ptr<Table> table);
     Table* get_table(const std::string& name);
@@ -161,6 +190,34 @@ public:
     FunctionDef* get_function(const std::string& name);
     const FunctionDef* get_function(const std::string& name) const;
     bool drop_function(const std::string& name);
+    void add_user(const std::string& username,
+                  const std::string& salt_hex,
+                  const std::string& password_verifier_hex,
+                  bool is_superuser = false);
+    bool alter_user_password(const std::string& username,
+                             const std::string& salt_hex,
+                             const std::string& password_verifier_hex);
+    bool drop_user(const std::string& username);
+    UserDef* get_user(const std::string& username);
+    const UserDef* get_user(const std::string& username) const;
+    void grant_privileges(const std::string& grantor,
+                          const std::string& grantee,
+                          const std::string& object_type,
+                          const std::string& object_name,
+                          const std::unordered_set<Privilege>& privileges);
+    void revoke_privileges(const std::string& grantee,
+                           const std::string& object_type,
+                           const std::string& object_name,
+                           const std::unordered_set<Privilege>& privileges);
+    bool has_privilege(const std::string& username,
+                       const std::string& object_type,
+                       const std::string& object_name,
+                       Privilege privilege) const;
+    void set_object_owner(const std::string& object_type,
+                          const std::string& object_name,
+                          const std::string& owner);
+    std::string get_object_owner(const std::string& object_type,
+                                 const std::string& object_name) const;
     void create_index(const std::string& idx_name, const std::string& table_name,
                       const std::string& column_name, bool hash);
     HashIndex* get_index(const std::string& table_name, const std::string& column_name);
@@ -188,6 +245,10 @@ public:
     bool drop_trigger(const std::string& name);
     std::vector<TriggerDef*> get_triggers(const std::string& table, TriggerDef::Event event);
 };
+
+std::string normalize_identifier_key(const std::string& name);
+Catalog::Privilege privilege_from_string(const std::string& privilege_name);
+std::string privilege_to_string(Catalog::Privilege privilege);
 
 bool value_is_null(const Value& v);
 int64_t value_to_int(const Value& v);

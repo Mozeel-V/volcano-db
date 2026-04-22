@@ -63,6 +63,10 @@ extern int yylineno;
 "OVER"              { return OVER; }
 "PARTITION"         { return PARTITION; }
 "CREATE"            { return CREATE; }
+"USER"              { return USER; }
+"IDENTIFIED"        { return IDENTIFIED; }
+"GRANT"             { return GRANT; }
+"REVOKE"            { return REVOKE; }
 "TABLE"             { return TABLE; }
 "VIEW"              { return VIEW; }
 "MATERIALIZED"      { return MATERIALIZED; }

@@ -184,6 +184,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %token UNION INTERSECT EXCEPT ALL SOME ANY
 %token OVER PARTITION
 %token WITH CREATE TABLE VIEW MATERIALIZED INDEX USING HASH BTREE
+%token USER IDENTIFIED GRANT REVOKE
 %token FUNCTION RETURNS
 %token INSERT INTO VALUES LOAD EXPLAIN ANALYZE BENCHMARK_KW
 %token COMMIT_KW ROLLBACK_KW TRANSACTION_KW
@@ -220,6 +221,8 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %type <ival>      opt_distinct opt_asc_desc join_kind before_after trigger_event quantifier_kw opt_on_delete opt_union_all
 %type <constraints> col_constraints
 %type <slist>     trigger_body trigger_stmts
+%type <slist>     privilege_list
+%type <str_val>   object_type
 %type <int_val>   opt_limit opt_offset
 %type <rowlist>   insert_rows
 %type <assignlist> set_list
@@ -357,6 +360,48 @@ statement:
         }
         st->create_function = fn;
         $$ = st;
+      }
+    | CREATE USER IDENTIFIER IDENTIFIED BY STRING_LITERAL {
+          auto st = new Statement(); st->type = StmtType::ST_CREATE_USER;
+          auto cu = std::make_shared<CreateUserStmt>();
+          cu->username = take_str($3);
+          cu->password = take_str($6);
+          st->create_user = cu; $$ = st;
+      }
+    | ALTER USER IDENTIFIER IDENTIFIED BY STRING_LITERAL {
+          auto st = new Statement(); st->type = StmtType::ST_ALTER_USER;
+          auto au = std::make_shared<AlterUserStmt>();
+          au->username = take_str($3);
+          au->password = take_str($6);
+          st->alter_user = au; $$ = st;
+      }
+    | DROP USER IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_DROP_USER;
+          st->drop_name = take_str($3); $$ = st;
+      }
+    | GRANT privilege_list ON object_type IDENTIFIER TO IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_GRANT;
+          auto gr = std::make_shared<GrantRevokeStmt>();
+          gr->object_type = take_str($4);
+          gr->object_name = take_str($5);
+          gr->grantee = take_str($7);
+          for (int i = 0; i < $2.count; i++) {
+              gr->privileges.push_back(take_str($2.items[i]));
+          }
+          if ($2.items) free($2.items);
+          st->grant_revoke = gr; $$ = st;
+      }
+    | REVOKE privilege_list ON object_type IDENTIFIER FROM IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_REVOKE;
+          auto gr = std::make_shared<GrantRevokeStmt>();
+          gr->object_type = take_str($4);
+          gr->object_name = take_str($5);
+          gr->grantee = take_str($7);
+          for (int i = 0; i < $2.count; i++) {
+              gr->privileges.push_back(take_str($2.items[i]));
+          }
+          if ($2.items) free($2.items);
+          st->grant_revoke = gr; $$ = st;
       }
     | INSERT INTO IDENTIFIER VALUES insert_rows {
           auto st = new Statement(); st->type = StmtType::ST_INSERT;
@@ -689,6 +734,31 @@ order_list:
     ;
 
 opt_asc_desc: /* empty */ { $$ = 1; } | ASC { $$ = 1; } | DESC { $$ = 0; } ;
+
+privilege_list:
+      IDENTIFIER { $$ = make_slist(); slist_push($$, $1); }
+    | privilege_list ',' IDENTIFIER { $$ = $1; slist_push($$, $3); }
+    | SELECT { $$ = make_slist(); slist_push($$, strdup("SELECT")); }
+    | INSERT { $$ = make_slist(); slist_push($$, strdup("INSERT")); }
+    | UPDATE { $$ = make_slist(); slist_push($$, strdup("UPDATE")); }
+    | DELETE_KW { $$ = make_slist(); slist_push($$, strdup("DELETE")); }
+    | ALTER { $$ = make_slist(); slist_push($$, strdup("ALTER")); }
+    | DROP { $$ = make_slist(); slist_push($$, strdup("DROP")); }
+    | EXECUTE { $$ = make_slist(); slist_push($$, strdup("EXECUTE")); }
+    | privilege_list ',' SELECT { $$ = $1; slist_push($$, strdup("SELECT")); }
+    | privilege_list ',' INSERT { $$ = $1; slist_push($$, strdup("INSERT")); }
+    | privilege_list ',' UPDATE { $$ = $1; slist_push($$, strdup("UPDATE")); }
+    | privilege_list ',' DELETE_KW { $$ = $1; slist_push($$, strdup("DELETE")); }
+    | privilege_list ',' ALTER { $$ = $1; slist_push($$, strdup("ALTER")); }
+    | privilege_list ',' DROP { $$ = $1; slist_push($$, strdup("DROP")); }
+    | privilege_list ',' EXECUTE { $$ = $1; slist_push($$, strdup("EXECUTE")); }
+    ;
+
+object_type:
+      TABLE { $$ = strdup("TABLE"); }
+    | VIEW { $$ = strdup("VIEW"); }
+    | FUNCTION { $$ = strdup("FUNCTION"); }
+    ;
 
 opt_limit:  /* empty */ { $$ = -1; } | LIMIT INT_LITERAL  { $$ = $2; } ;
 opt_offset: /* empty */ { $$ = 0; }  | OFFSET INT_LITERAL { $$ = $2; } ;
