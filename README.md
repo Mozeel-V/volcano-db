@@ -85,6 +85,35 @@ Run VolcanoDB as a TCP server:
 
 The server currently uses a text-based native protocol documented in [docs/protocol.md](docs/protocol.md).
 
+#### What the server does
+
+1. Opens a TCP listener on the configured host and port.
+2. Accepts multiple concurrent client connections.
+3. Assigns each connection an endpoint session identity (`IP:port`) and sends it during handshake.
+4. Supports protocol control commands:
+  - `PING` -> `PONG`
+  - `QUIT` / `.quit` / `.exit` -> `BYE`
+5. Executes SQL sent over the socket and returns response envelopes:
+  - `CONTINUE` for incomplete statements (no trailing `;` yet)
+  - `OK` or `ERROR` once statement execution finishes
+  - `END` to terminate each response body
+6. Reuses the existing SQL engine pipeline (parser/planner/optimizer/executor).
+
+Protocol handshake example:
+
+```text
+HELLO VDB
+SESSION 127.0.0.1:60344
+```
+
+SQL response example:
+
+```text
+OK
+<engine output lines>
+END
+```
+
 Session identity model:
 
 1. One active session per connected client endpoint (`IP:port`).
@@ -95,6 +124,26 @@ Python native client smoke test:
 ```bash
 python clients/python/smoke_test.py --host 127.0.0.1 --port 54330
 ```
+
+Node native client smoke test:
+
+```bash
+node clients/node/smoke_test.js --host 127.0.0.1 --port 54330
+```
+
+Node client integration tests:
+
+```bash
+npm --prefix clients/node test
+```
+
+#### Current constraints
+
+1. Protocol is text, newline-delimited, not a fully structured binary wire protocol yet.
+2. Server bind host currently supports IPv4 values.
+3. SQL execution in server mode is serialized through a shared engine mutex.
+4. Runtime is memory-first: restart clears live state unless data is explicitly exported and reloaded.
+5. Production hardening features such as auth mode, request-size caps, idle timeout controls, and pool tuning flags are planned but not fully surfaced yet.
 
 ### Quick start
 

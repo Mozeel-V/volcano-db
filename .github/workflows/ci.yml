@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-server-smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Miniconda (base env)
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          python-version: "3.12"
+          activate-environment: base
+
+      - name: Setup MSYS2 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-flex
+            mingw-w64-x86_64-bison
+            mingw-w64-x86_64-make
+
+      - name: Configure and build
+        shell: msys2 {0}
+        run: |
+          cmake -S . -B build -G "MinGW Makefiles"
+          cmake --build build
+
+      - name: Run C++ server integration tests
+        shell: msys2 {0}
+        run: |
+          ctest --test-dir build --output-on-failure -R "server|Server|integration"
+
+      - name: Run Node integration tests
+        shell: powershell
+        run: |
+          npm --prefix clients/node test
+
+      - name: Run Python and Node smoke tests against live server
+        shell: powershell
+        run: |
+          $server = Start-Process -FilePath ".\build\vdb.exe" -ArgumentList "--server","--host","127.0.0.1","--port","54330" -PassThru -WindowStyle Hidden
+          try {
+            Start-Sleep -Seconds 2
+            conda run -n base python clients/python/smoke_test.py --host 127.0.0.1 --port 54330
+            node clients/node/smoke_test.js --host 127.0.0.1 --port 54330
+          }
+          finally {
+            if ($server -and !$server.HasExited) {
+              Stop-Process -Id $server.Id -Force
+            }
+          }

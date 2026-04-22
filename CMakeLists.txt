@@ -77,10 +77,14 @@ endif()
 add_executable(vdb_tests
     tests/test_main.cpp
     tests/test_commands.cpp
+    tests/test_server_integration.cpp
     ${LIB_SOURCES}
 )
 target_link_libraries(vdb_tests PRIVATE Catch2::Catch2WithMain)
 target_compile_options(vdb_tests PRIVATE -O2 -Wall)
+if(WIN32)
+    target_link_libraries(vdb_tests PRIVATE ws2_32)
+endif()
 
 include(CTest)
 include(Catch)

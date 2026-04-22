@@ -54,3 +54,6 @@ __pycache__/
 # Local runtime persistence artifacts
 sqp.wal
 sqp.checkpoint
+
+# Node dependencies
+node_modules/

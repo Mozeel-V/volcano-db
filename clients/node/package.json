@@ -1,0 +1,11 @@
+{
+  "name": "vdb-node",
+  "version": "0.1.0",
+  "description": "Track A native protocol Node.js client for VolcanoDB",
+  "main": "vdb_client.js",
+  "type": "commonjs",
+  "scripts": {
+    "smoke": "node smoke_test.js",
+    "test": "node --test test_integration.js"
+  }
+}
