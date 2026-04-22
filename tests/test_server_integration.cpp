@@ -362,6 +362,23 @@ static bool authenticate(SocketHandle sock, const std::string& user, const std::
     return result.rfind("AUTH_OK ", 0) == 0;
 }
 
+static bool start_auth_challenge(SocketHandle sock,
+                                 const std::string& user,
+                                 std::string& salt_hex,
+                                 std::string& nonce_hex,
+                                 std::string& response_line) {
+    if (!send_all(sock, "AUTH_START " + user + "\n")) return false;
+    if (!read_line(sock, response_line)) return false;
+    if (response_line.rfind("AUTH_CHALLENGE ", 0) != 0) return false;
+
+    std::istringstream iss(response_line);
+    std::string tag, algo;
+    iss >> tag >> salt_hex >> nonce_hex >> algo;
+    if (tag != "AUTH_CHALLENGE") return false;
+    if (salt_hex.empty() || nonce_hex.empty()) return false;
+    return algo == "sha256";
+}
+
 } // namespace
 
 TEST_CASE("Server protocol: handshake, ping, quit", "[server][integration]") {
@@ -671,6 +688,18 @@ TEST_CASE("Server protocol: password auth requires login", "[server][integration
     std::string session;
     REQUIRE(read_handshake(client, session));
 
+    REQUIRE(send_all(client, ".help\n"));
+    std::string help_status;
+    REQUIRE(read_line(client, help_status));
+    CHECK(help_status == "OK");
+    auto help_body = read_until_end(client);
+    std::string help_text;
+    for (const auto& line : help_body) {
+        help_text += line;
+        help_text.push_back('\n');
+    }
+    CHECK_THAT(help_text, Catch::Matchers::ContainsSubstring(".tables"));
+
     REQUIRE(send_all(client, ".tables\n"));
     std::string dot_status;
     REQUIRE(read_line(client, dot_status));
@@ -704,6 +733,11 @@ TEST_CASE("Server protocol: password auth requires login", "[server][integration
     std::string auth_err;
     REQUIRE(read_line(client, auth_err));
     CHECK_THAT(auth_err, Catch::Matchers::StartsWith("AUTH_ERROR "));
+
+    REQUIRE(send_all(client, "AUTH_PROOF deadbeef\n"));
+    std::string stale_err;
+    REQUIRE(read_line(client, stale_err));
+    CHECK(stale_err == "AUTH_ERROR auth_nonce_expired");
 
     REQUIRE(send_all(client, "QUIT\n"));
     std::string bye;
@@ -803,4 +837,84 @@ TEST_CASE("Server protocol: authenticated principal sees only authorized metadat
     REQUIRE(read_line(alice, bye));
     CHECK(bye == "BYE");
     close_socket_handle(alice);
+}
+
+TEST_CASE("Server protocol: replayed proof is rejected after rechallenge", "[server][integration][auth]") {
+    DurabilityFileScope durability_scope;
+#ifdef _WIN32
+    WinSockScope ws;
+    REQUIRE(ws.ok());
+#endif
+
+    const uint16_t port = reserve_ephemeral_port();
+    REQUIRE(port != 0);
+
+    ServerProcess server(port, true);
+    REQUIRE(server.running());
+
+    SocketHandle client = connect_with_retry(port);
+    REQUIRE(client != kInvalidSocket);
+    std::string session;
+    REQUIRE(read_handshake(client, session));
+
+    std::string salt1, nonce1, line;
+    REQUIRE(start_auth_challenge(client, "admin", salt1, nonce1, line));
+    const std::string verifier1 = sha256_hex(salt1 + std::string("admin"));
+    const std::string proof1 = sha256_hex(verifier1 + nonce1);
+    REQUIRE(send_all(client, "AUTH_PROOF " + proof1 + "\n"));
+    std::string ok;
+    REQUIRE(read_line(client, ok));
+    CHECK_THAT(ok, Catch::Matchers::StartsWith("AUTH_OK "));
+
+    std::string salt2, nonce2;
+    REQUIRE(start_auth_challenge(client, "admin", salt2, nonce2, line));
+    REQUIRE(send_all(client, "AUTH_PROOF " + proof1 + "\n"));
+    std::string replay_err;
+    REQUIRE(read_line(client, replay_err));
+    CHECK(replay_err == "AUTH_ERROR auth_failed");
+
+    REQUIRE(send_all(client, "QUIT\n"));
+    std::string bye;
+    REQUIRE(read_line(client, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(client);
+}
+
+TEST_CASE("Server protocol: repeated failed auth triggers lockout", "[server][integration][auth]") {
+    DurabilityFileScope durability_scope;
+#ifdef _WIN32
+    WinSockScope ws;
+    REQUIRE(ws.ok());
+#endif
+
+    const uint16_t port = reserve_ephemeral_port();
+    REQUIRE(port != 0);
+
+    ServerProcess server(port, true);
+    REQUIRE(server.running());
+
+    SocketHandle client = connect_with_retry(port);
+    REQUIRE(client != kInvalidSocket);
+    std::string session;
+    REQUIRE(read_handshake(client, session));
+
+    for (int i = 0; i < 3; i++) {
+        std::string salt, nonce, line;
+        REQUIRE(start_auth_challenge(client, "admin", salt, nonce, line));
+        REQUIRE(send_all(client, "AUTH_PROOF deadbeef\n"));
+        std::string err;
+        REQUIRE(read_line(client, err));
+        CHECK(err == "AUTH_ERROR auth_failed");
+    }
+
+    REQUIRE(send_all(client, "AUTH_START admin\n"));
+    std::string locked;
+    REQUIRE(read_line(client, locked));
+    CHECK(locked == "AUTH_ERROR auth_locked");
+
+    REQUIRE(send_all(client, "QUIT\n"));
+    std::string bye;
+    REQUIRE(read_line(client, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(client);
 }

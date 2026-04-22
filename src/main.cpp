@@ -720,7 +720,10 @@ static bool statement_requires_authorization(ast::StmtType type) {
         case ast::StmtType::ST_REVOKE:
             return false;
         default:
-            return statement_mutates_catalog(type) || type == ast::StmtType::ST_SELECT || type == ast::StmtType::ST_EXPLAIN;
+            return statement_mutates_catalog(type) ||
+                   type == ast::StmtType::ST_SELECT ||
+                   type == ast::StmtType::ST_EXPLAIN ||
+                   type == ast::StmtType::ST_BENCHMARK;
     }
 }
 
@@ -746,11 +749,29 @@ static bool check_statement_authorization(const ast::Statement& stmt,
 
     switch (stmt.type) {
         case ast::StmtType::ST_SELECT:
-        case ast::StmtType::ST_EXPLAIN: {
+        case ast::StmtType::ST_EXPLAIN:
+        case ast::StmtType::ST_BENCHMARK: {
             if (!stmt.select) return true;
             auto tables = collect_tables_from_select(*stmt.select);
-            for (const auto& table : tables) {
-                if (!require("TABLE", table, storage::Catalog::Privilege::PRIV_SELECT)) return false;
+            for (const auto& rel : tables) {
+                if (catalog.has_view(rel)) {
+                    if (!require("VIEW", rel, storage::Catalog::Privilege::PRIV_SELECT)) return false;
+                } else {
+                    if (!require("TABLE", rel, storage::Catalog::Privilege::PRIV_SELECT)) return false;
+                }
+            }
+            return true;
+        }
+        case ast::StmtType::ST_CREATE_VIEW:
+        case ast::StmtType::ST_CREATE_MATERIALIZED_VIEW: {
+            if (!stmt.create_view || !stmt.create_view->query) return true;
+            auto tables = collect_tables_from_select(*stmt.create_view->query);
+            for (const auto& rel : tables) {
+                if (catalog.has_view(rel)) {
+                    if (!require("VIEW", rel, storage::Catalog::Privilege::PRIV_SELECT)) return false;
+                } else {
+                    if (!require("TABLE", rel, storage::Catalog::Privilege::PRIV_SELECT)) return false;
+                }
             }
             return true;
         }
@@ -760,6 +781,13 @@ static bool check_statement_authorization(const ast::Statement& stmt,
             return stmt.update ? require("TABLE", stmt.update->table_name, storage::Catalog::Privilege::PRIV_UPDATE) : true;
         case ast::StmtType::ST_DELETE:
             return stmt.del ? require("TABLE", stmt.del->table_name, storage::Catalog::Privilege::PRIV_DELETE) : true;
+        case ast::StmtType::ST_MERGE:
+            if (!stmt.merge) return true;
+            if (!require("TABLE", stmt.merge->target_table, storage::Catalog::Privilege::PRIV_UPDATE)) return false;
+            if (!require("TABLE", stmt.merge->target_table, storage::Catalog::Privilege::PRIV_INSERT)) return false;
+            return require("TABLE", stmt.merge->source_table, storage::Catalog::Privilege::PRIV_SELECT);
+        case ast::StmtType::ST_LOAD:
+            return stmt.load ? require("TABLE", stmt.load->table_name, storage::Catalog::Privilege::PRIV_INSERT) : true;
         case ast::StmtType::ST_CREATE_INDEX:
             return stmt.create_index ? require("TABLE", stmt.create_index->table_name, storage::Catalog::Privilege::PRIV_ALTER) : true;
         case ast::StmtType::ST_ALTER_ADD_COL:
@@ -767,10 +795,49 @@ static bool check_statement_authorization(const ast::Statement& stmt,
         case ast::StmtType::ST_ALTER_RENAME_COL:
         case ast::StmtType::ST_ALTER_RENAME_TBL:
             return stmt.alter ? require("TABLE", stmt.alter->table_name, storage::Catalog::Privilege::PRIV_ALTER) : true;
+        case ast::StmtType::ST_DROP_INDEX: {
+            std::set<std::string> owner_tables;
+            for (const auto& [_, idx] : catalog.indexes) {
+                if (!idx) continue;
+                const std::string key = idx->table_name + "." + idx->column_name;
+                if (storage::normalize_identifier_key(key) == storage::normalize_identifier_key(stmt.drop_name) ||
+                    storage::normalize_identifier_key(key).find(storage::normalize_identifier_key(stmt.drop_name)) != std::string::npos) {
+                    owner_tables.insert(idx->table_name);
+                }
+            }
+            for (const auto& [_, idx] : catalog.btree_indexes) {
+                if (!idx) continue;
+                const std::string key = idx->table_name + "." + idx->column_name;
+                if (storage::normalize_identifier_key(key) == storage::normalize_identifier_key(stmt.drop_name) ||
+                    storage::normalize_identifier_key(key).find(storage::normalize_identifier_key(stmt.drop_name)) != std::string::npos) {
+                    owner_tables.insert(idx->table_name);
+                }
+            }
+            if (owner_tables.empty()) return true; // keep existing not-found behavior path
+            for (const auto& table : owner_tables) {
+                if (!require("TABLE", table, storage::Catalog::Privilege::PRIV_ALTER)) return false;
+            }
+            return true;
+        }
         case ast::StmtType::ST_DROP_TABLE:
             return require("TABLE", stmt.drop_name, storage::Catalog::Privilege::PRIV_DROP);
         case ast::StmtType::ST_DROP_VIEW:
             return require("VIEW", stmt.drop_name, storage::Catalog::Privilege::PRIV_DROP);
+        case ast::StmtType::ST_TRUNCATE:
+            return require("TABLE", stmt.drop_name, storage::Catalog::Privilege::PRIV_DELETE);
+        case ast::StmtType::ST_CREATE_TRIGGER:
+            return stmt.create_trigger ? require("TABLE", stmt.create_trigger->table_name, storage::Catalog::Privilege::PRIV_ALTER) : true;
+        case ast::StmtType::ST_DROP_TRIGGER: {
+            std::string owner_table;
+            for (const auto& trig : catalog.triggers) {
+                if (trig && storage::normalize_identifier_key(trig->name) == storage::normalize_identifier_key(stmt.drop_name)) {
+                    owner_table = trig->table_name;
+                    break;
+                }
+            }
+            if (owner_table.empty()) return true; // keep existing not-found behavior path
+            return require("TABLE", owner_table, storage::Catalog::Privilege::PRIV_ALTER);
+        }
         case ast::StmtType::ST_CREATE_FUNCTION:
             return true;
         case ast::StmtType::ST_DROP_FUNCTION:
@@ -1924,7 +1991,7 @@ static bool handle_dot_command(const std::string& line,
                 std::cout << "  " << col.name << " " << type_str << "\n";
             }
         } else {
-            std::cout << "Object not found: " << tname << "\n";
+            std::cout << "Table not found: " << tname << "\n";
         }
         return true;
     }
@@ -2179,6 +2246,12 @@ static void handle_server_client(SocketHandle client_sock,
     std::string sql_buffer;
     std::string auth_user = "anonymous";
     std::string auth_nonce;
+    auto auth_nonce_issued_at = std::chrono::steady_clock::time_point{};
+    constexpr std::chrono::seconds kAuthNonceTtl{90};
+    int auth_failed_attempts = 0;
+    auto auth_lockout_until = std::chrono::steady_clock::time_point{};
+    constexpr int kAuthMaxFailedAttempts = 3;
+    constexpr std::chrono::seconds kAuthLockoutDuration{60};
     bool authenticated = (auth_mode == ServerAuthMode::NONE);
     char tmp[4096];
 
@@ -2206,14 +2279,25 @@ static void handle_server_client(SocketHandle client_sock,
                     if (!send_all(client_sock, "AUTH_ERROR auth_not_enabled\n")) goto client_done;
                     continue;
                 }
+                if (std::chrono::steady_clock::now() < auth_lockout_until) {
+                    if (!send_all(client_sock, "AUTH_ERROR auth_locked\n")) goto client_done;
+                    continue;
+                }
                 auth_user = trim_copy(cmd.substr(std::string("AUTH_START ").size()));
                 auto* user = catalog.get_user(auth_user);
                 if (!user || user->is_locked) {
                     auth_nonce = to_hex(random_bytes(16));
+                    auth_nonce_issued_at = std::chrono::steady_clock::now();
+                    auth_failed_attempts++;
+                    if (auth_failed_attempts >= kAuthMaxFailedAttempts) {
+                        auth_lockout_until = std::chrono::steady_clock::now() + kAuthLockoutDuration;
+                        auth_failed_attempts = 0;
+                    }
                     if (!send_all(client_sock, "AUTH_ERROR auth_failed\n")) goto client_done;
                     continue;
                 }
                 auth_nonce = to_hex(random_bytes(16));
+                auth_nonce_issued_at = std::chrono::steady_clock::now();
                 std::string challenge = "AUTH_CHALLENGE " + user->salt_hex + " " + auth_nonce + " sha256\n";
                 if (!send_all(client_sock, challenge)) goto client_done;
                 continue;
@@ -2224,7 +2308,16 @@ static void handle_server_client(SocketHandle client_sock,
                     if (!send_all(client_sock, "AUTH_ERROR auth_not_enabled\n")) goto client_done;
                     continue;
                 }
+                if (std::chrono::steady_clock::now() < auth_lockout_until) {
+                    if (!send_all(client_sock, "AUTH_ERROR auth_locked\n")) goto client_done;
+                    continue;
+                }
                 if (auth_nonce.empty() || auth_user.empty()) {
+                    if (!send_all(client_sock, "AUTH_ERROR auth_nonce_expired\n")) goto client_done;
+                    continue;
+                }
+                if (std::chrono::steady_clock::now() - auth_nonce_issued_at > kAuthNonceTtl) {
+                    auth_nonce.clear();
                     if (!send_all(client_sock, "AUTH_ERROR auth_nonce_expired\n")) goto client_done;
                     continue;
                 }
@@ -2232,16 +2325,27 @@ static void handle_server_client(SocketHandle client_sock,
                 auto* user = catalog.get_user(auth_user);
                 if (!user || user->is_locked) {
                     auth_nonce.clear();
+                    auth_failed_attempts++;
+                    if (auth_failed_attempts >= kAuthMaxFailedAttempts) {
+                        auth_lockout_until = std::chrono::steady_clock::now() + kAuthLockoutDuration;
+                        auth_failed_attempts = 0;
+                    }
                     if (!send_all(client_sock, "AUTH_ERROR auth_failed\n")) goto client_done;
                     continue;
                 }
                 const std::string expected = sha256_hex(user->password_verifier_hex + auth_nonce);
                 auth_nonce.clear();
                 if (proof != expected) {
+                    auth_failed_attempts++;
+                    if (auth_failed_attempts >= kAuthMaxFailedAttempts) {
+                        auth_lockout_until = std::chrono::steady_clock::now() + kAuthLockoutDuration;
+                        auth_failed_attempts = 0;
+                    }
                     if (!send_all(client_sock, "AUTH_ERROR auth_failed\n")) goto client_done;
                     continue;
                 }
                 authenticated = true;
+                auth_failed_attempts = 0;
                 if (!send_all(client_sock, "AUTH_OK " + auth_user + "\n")) goto client_done;
                 continue;
             }
@@ -2252,14 +2356,14 @@ static void handle_server_client(SocketHandle client_sock,
             }
 
             if (!cmd.empty() && cmd.front() == '.') {
-                if (auth_mode == ServerAuthMode::PASSWORD && !authenticated) {
+                if (auth_mode == ServerAuthMode::PASSWORD && !authenticated && cmd != ".help") {
                     if (!send_all(client_sock, "ERROR\nauth_required\nEND\n")) goto client_done;
                     continue;
                 }
                 std::string captured;
                 bool ok = execute_dot_command_with_capture(cmd, catalog, txn_manager, lock_manager, wal_manager,
                                                            engine_mutex, auth_user,
-                                                           auth_mode == ServerAuthMode::PASSWORD,
+                                                           auth_mode == ServerAuthMode::PASSWORD && authenticated,
                                                            captured);
                 if (!ok) {
                     send_all(client_sock, "BYE\n");

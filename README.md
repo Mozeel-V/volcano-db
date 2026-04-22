@@ -121,6 +121,7 @@ When running with `--auth-mode password`:
   - `AUTH_PROOF <proof_hex>`
   - `AUTH_OK <username>` or `AUTH_ERROR <reason>`
 2. Unauthenticated SQL requests are rejected with `auth_required`.
+  - For UX, `.help` is available pre-auth; SQL and other dot commands require authentication.
 3. SQL identity is principal-based (`username`) and is distinct from endpoint identity (`IP:port`).
 4. User and privilege SQL is supported:
   - `CREATE USER ... IDENTIFIED BY ...`
@@ -181,7 +182,7 @@ npm --prefix clients/node test
 3. SQL execution in server mode is serialized through a shared engine mutex.
 4. Runtime is memory-first: restart clears live state unless data is explicitly exported and reloaded.
 5. `--auth-mode password` is implemented; request-size caps, idle timeout controls, and connection-limit flags are still planned.
-6. Non-QUIT dot commands are not part of the TCP SQL protocol surface.
+6. A subset of dot commands is available over TCP (`.help`, `.functions`, `.tables`, `.schema`, `.plan`, `.triggers`); operational/local commands (`.generate`, `.save`, `.source`, `.benchmark`) remain CLI-only.
 
 ### Quick start
 
@@ -451,13 +452,13 @@ Tag snapshot from `./vdb_tests --list-tags` (counts are per-tag and overlap acro
 
 | Area | Tag(s) | Cases |
 |------|--------|------:|
-| **Total suite** | `all` | **457** |
+| **Total suite** | `all` | **459** |
 | Parsing and grammar | `[parser]` | 112 |
 | End-to-end SQL | `[e2e]` | 251 |
 | CLI and scripts | `[commands]` | 29 |
 | Storage core | `[storage]` | 38 |
 | Indexing | `[index]` | 21 |
-| Server/integration/auth | `[server]`, `[integration]`, `[auth]` | 8, 8, 6 |
+| Server/integration/auth | `[server]`, `[integration]`, `[auth]` | 10, 10, 8 |
 | ACID evidence matrix | `[acid]`, `[acid-a]`, `[acid-c]`, `[acid-i]`, `[acid-d]` | 19, 1, 3, 5, 11 |
 | Transactions | `[transaction]` | 19 |
 | Locking | `[lock]` | 10 |

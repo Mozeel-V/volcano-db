@@ -77,7 +77,9 @@ Notes:
 
 1. The client computes `verifier = SHA256(salt_hex || password)`.
 2. The client computes `proof = SHA256(verifier || nonce)`.
-3. Until authentication succeeds in password mode, SQL requests are rejected with `ERROR ... auth_required ... END`.
+3. Nonces are single-use and expire after 90 seconds.
+4. After repeated failed proofs, server can temporarily return `AUTH_ERROR auth_locked` for lockout throttling.
+5. Until authentication succeeds in password mode, SQL requests are rejected with `ERROR ... auth_required ... END`.
 
 ### SQL execution
 
@@ -120,7 +122,7 @@ Supported over server protocol:
 1. `.help`
 2. `.functions [builtins|udf]`
 3. `.tables`
-4. `.schema <table>`
+4. `.schema <table_or_view>`
 5. `.plan` / `.plan dot`
 6. `.triggers`
 7. `.quit` / `.exit` (disconnect)
@@ -142,8 +144,9 @@ END
 
 Authorization behavior in password mode:
 
-1. Dot commands (except `.quit` / `.exit`) require successful authentication first.
-2. `.tables`, `.schema`, `.functions udf`, and `.triggers` are filtered/checked against the authenticated principal.
+1. `.help`, `.quit`, and `.exit` are allowed before authentication for session discoverability/exit.
+2. Other dot commands require successful authentication first.
+3. `.tables`, `.schema`, `.functions udf`, and `.triggers` are filtered/checked against the authenticated principal.
 
 ## Error handling
 
