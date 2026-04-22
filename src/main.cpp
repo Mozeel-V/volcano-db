@@ -1784,8 +1784,31 @@ static bool run_script_file(const std::string& path,
 static bool handle_dot_command(const std::string& line,
                                storage::Catalog& catalog,
                                storage::TransactionManager& txn_manager,
-                                         storage::LockManager& lock_manager,
-                                         storage::WalManager& wal_manager) {
+                               storage::LockManager& lock_manager,
+                               storage::WalManager& wal_manager,
+                               const std::string& current_user = "local_admin",
+                               bool enforce_authorization = false,
+                               bool is_remote = false) {
+    auto can_read_table = [&](const std::string& table_name) {
+        if (!enforce_authorization) return true;
+        return catalog.has_privilege(current_user, "TABLE", table_name, storage::Catalog::Privilege::PRIV_SELECT);
+    };
+
+    auto can_read_view = [&](const std::string& view_name) {
+        if (!enforce_authorization) return true;
+        return catalog.has_privilege(current_user, "VIEW", view_name, storage::Catalog::Privilege::PRIV_SELECT);
+    };
+
+    auto can_list_function = [&](const std::string& function_name) {
+        if (!enforce_authorization) return true;
+        return catalog.has_privilege(current_user, "FUNCTION", function_name, storage::Catalog::Privilege::PRIV_EXECUTE);
+    };
+
+    auto can_admin_table = [&](const std::string& table_name) {
+        if (!enforce_authorization) return true;
+        return catalog.has_privilege(current_user, "TABLE", table_name, storage::Catalog::Privilege::PRIV_ALTER);
+    };
+
     if (line == ".quit" || line == ".exit") return false;
     if (line == ".help") {
         print_help();
@@ -1799,31 +1822,101 @@ static bool handle_dot_command(const std::string& line,
 
         std::string arg = trim_copy(line.substr(10));
         if (arg.empty()) {
-            print_functions(catalog, FunctionListMode::ALL);
+            if (!enforce_authorization) {
+                print_functions(catalog, FunctionListMode::ALL);
+            } else {
+                std::cout << "Built-in SQL functions:\n";
+                auto builtins = executor::list_builtin_scalar_function_names();
+                for (const auto& name : builtins) std::cout << "  " << name << "\n";
+
+                std::vector<const storage::Catalog::FunctionDef*> user_functions;
+                for (const auto& [_, def] : catalog.functions) {
+                    if (def && can_list_function(def->name)) user_functions.push_back(def.get());
+                }
+                std::sort(user_functions.begin(), user_functions.end(),
+                          [](const storage::Catalog::FunctionDef* a, const storage::Catalog::FunctionDef* b) {
+                              return storage::normalize_identifier_key(a->name) < storage::normalize_identifier_key(b->name);
+                          });
+                std::cout << "User-defined SQL functions (authorized) (" << user_functions.size() << "):\n";
+                for (const auto* fn : user_functions) {
+                    std::cout << "  " << fn->name << "(";
+                    for (size_t i = 0; i < fn->params.size(); i++) {
+                        if (i) std::cout << ", ";
+                        std::cout << fn->params[i].name << " " << data_type_to_string(fn->params[i].type);
+                    }
+                    std::cout << ") RETURNS " << data_type_to_string(fn->return_type) << "\n";
+                }
+            }
         } else if (arg == "builtins") {
             print_functions(catalog, FunctionListMode::BUILTINS_ONLY);
         } else if (arg == "udf") {
-            print_functions(catalog, FunctionListMode::UDF_ONLY);
+            if (!enforce_authorization) {
+                print_functions(catalog, FunctionListMode::UDF_ONLY);
+            } else {
+                std::vector<const storage::Catalog::FunctionDef*> user_functions;
+                for (const auto& [_, def] : catalog.functions) {
+                    if (def && can_list_function(def->name)) user_functions.push_back(def.get());
+                }
+                std::sort(user_functions.begin(), user_functions.end(),
+                          [](const storage::Catalog::FunctionDef* a, const storage::Catalog::FunctionDef* b) {
+                              return storage::normalize_identifier_key(a->name) < storage::normalize_identifier_key(b->name);
+                          });
+                std::cout << "User-defined SQL functions (authorized) (" << user_functions.size() << "):\n";
+                for (const auto* fn : user_functions) {
+                    std::cout << "  " << fn->name << "(";
+                    for (size_t i = 0; i < fn->params.size(); i++) {
+                        if (i) std::cout << ", ";
+                        std::cout << fn->params[i].name << " " << data_type_to_string(fn->params[i].type);
+                    }
+                    std::cout << ") RETURNS " << data_type_to_string(fn->return_type) << "\n";
+                }
+            }
         } else {
             std::cout << "Usage: .functions [builtins|udf]\n";
         }
         return true;
     }
     if (line == ".tables") {
+        size_t visible = 0;
         for (auto& [name, tbl] : catalog.tables) {
-            std::cout << "  " << name << " (" << tbl->rows.size() << " rows)\n";
+            if (can_read_table(name)) {
+                std::cout << "  " << name << " (" << tbl->rows.size() << " rows)\n";
+                visible++;
+            }
         }
         for (auto& [name, view] : catalog.views) {
-            if (!view->materialized) {
+            if (!view->materialized && can_read_view(name)) {
                 std::cout << "  " << name << " (view)\n";
+                visible++;
             }
+        }
+        if (enforce_authorization && visible == 0) {
+            std::cout << "No visible tables/views for current principal.\n";
         }
         return true;
     }
     if (starts_with(line, ".schema")) {
         std::string tname = trim_copy(line.substr(7));
+        if (tname.empty()) {
+            std::cout << "Usage: .schema <table_or_view>\n";
+            return true;
+        }
+        auto* view = catalog.get_view(tname);
+        if (view) {
+            if (!can_read_view(tname)) {
+                std::cout << "Permission denied: missing SELECT on VIEW " << tname << "\n";
+                return true;
+            }
+            std::cout << "View: " << tname << " (" << (view->materialized ? "materialized" : "logical") << ")\n";
+            return true;
+        }
+
         auto* tbl = catalog.get_table(tname);
         if (tbl) {
+            if (!can_read_table(tname)) {
+                std::cout << "Permission denied: missing SELECT on TABLE " << tname << "\n";
+                return true;
+            }
             std::cout << "Table: " << tbl->name << "\n";
             for (auto& col : tbl->schema) {
                 std::string type_str = col.type == storage::DataType::INT ? "INT" :
@@ -1831,11 +1924,15 @@ static bool handle_dot_command(const std::string& line,
                 std::cout << "  " << col.name << " " << type_str << "\n";
             }
         } else {
-            std::cout << "Table not found: " << tname << "\n";
+            std::cout << "Object not found: " << tname << "\n";
         }
         return true;
     }
     if (starts_with(line, ".generate")) {
+        if (is_remote) {
+            std::cout << "Command not supported over server protocol: .generate\n";
+            return true;
+        }
         size_t n = 10000;
         if (line.size() > 9) {
             std::string ns = trim_copy(line.substr(9));
@@ -1847,6 +1944,10 @@ static bool handle_dot_command(const std::string& line,
         return true;
     }
     if (starts_with(line, ".save")) {
+        if (is_remote) {
+            std::cout << "Command not supported over server protocol: .save\n";
+            return true;
+        }
         std::string path = trim_copy(line.substr(5));
         if (path.empty()) {
             std::cout << "Usage: .save <file>\n";
@@ -1878,6 +1979,7 @@ static bool handle_dot_command(const std::string& line,
             std::cout << "Name            | Table           | Timing  | Event   | Action\n";
             std::cout << "----------------+-----------------+---------+---------+---------------------------\n";
             for (auto& t : catalog.triggers) {
+                if (!can_admin_table(t->table_name)) continue;
                 std::string combined;
                 for (size_t si = 0; si < t->action_sqls.size(); si++) {
                     if (si > 0) combined += "; ";
@@ -1891,6 +1993,10 @@ static bool handle_dot_command(const std::string& line,
         return true;
     }
     if (starts_with(line, ".source")) {
+        if (is_remote) {
+            std::cout << "Command not supported over server protocol: .source\n";
+            return true;
+        }
         std::string path = trim_copy(line.substr(7));
         if (path.empty()) {
             std::cout << "Usage: .source <file.sql>\n";
@@ -1899,6 +2005,10 @@ static bool handle_dot_command(const std::string& line,
         return run_script_file(path, catalog, txn_manager, lock_manager, wal_manager);
     }
     if (line == ".benchmark") {
+        if (is_remote) {
+            std::cout << "Command not supported over server protocol: .benchmark\n";
+            return true;
+        }
         if (catalog.tables.empty()) {
             std::cout << "No tables loaded. Use .generate first.\n";
         } else {
@@ -1925,7 +2035,8 @@ static bool process_input_line(const std::string& raw_line,
     }
 
     if (line[0] == '.') {
-        bool keep_running = handle_dot_command(line, catalog, txn_manager, lock_manager, wal_manager);
+        bool keep_running = handle_dot_command(line, catalog, txn_manager, lock_manager, wal_manager,
+                                               "local_admin", false, false);
         if (keep_running && is_interactive) std::cout << "sqp> ";
         return keep_running;
     }
@@ -2031,6 +2142,25 @@ static bool execute_sql_with_capture(const std::string& sql,
     return ok;
 }
 
+static bool execute_dot_command_with_capture(const std::string& line,
+                                             storage::Catalog& catalog,
+                                             storage::TransactionManager& txn_manager,
+                                             storage::LockManager& lock_manager,
+                                             storage::WalManager& wal_manager,
+                                             std::mutex& engine_mutex,
+                                             const std::string& current_user,
+                                             bool enforce_authorization,
+                                             std::string& captured) {
+    std::lock_guard<std::mutex> guard(engine_mutex);
+    std::ostringstream oss;
+    auto* old_buf = std::cout.rdbuf(oss.rdbuf());
+    bool ok = handle_dot_command(line, catalog, txn_manager, lock_manager, wal_manager,
+                                 current_user, enforce_authorization, true);
+    std::cout.rdbuf(old_buf);
+    captured = oss.str();
+    return ok;
+}
+
 static void handle_server_client(SocketHandle client_sock,
                                  std::string session_id,
                                  storage::Catalog& catalog,
@@ -2124,9 +2254,20 @@ static void handle_server_client(SocketHandle client_sock,
             if (!cmd.empty() && cmd.front() == '.') {
                 if (auth_mode == ServerAuthMode::PASSWORD && !authenticated) {
                     if (!send_all(client_sock, "ERROR\nauth_required\nEND\n")) goto client_done;
-                } else {
-                    if (!send_all(client_sock, "ERROR\ndot_command_not_supported\nEND\n")) goto client_done;
+                    continue;
                 }
+                std::string captured;
+                bool ok = execute_dot_command_with_capture(cmd, catalog, txn_manager, lock_manager, wal_manager,
+                                                           engine_mutex, auth_user,
+                                                           auth_mode == ServerAuthMode::PASSWORD,
+                                                           captured);
+                if (!ok) {
+                    send_all(client_sock, "BYE\n");
+                    goto client_done;
+                }
+                if (!send_all(client_sock, "OK\n")) goto client_done;
+                if (!captured.empty() && !send_all(client_sock, captured)) goto client_done;
+                if (!send_all(client_sock, "END\n")) goto client_done;
                 continue;
             }
 

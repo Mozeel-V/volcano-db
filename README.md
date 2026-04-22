@@ -451,13 +451,13 @@ Tag snapshot from `./vdb_tests --list-tags` (counts are per-tag and overlap acro
 
 | Area | Tag(s) | Cases |
 |------|--------|------:|
-| **Total suite** | `all` | **455** |
+| **Total suite** | `all` | **457** |
 | Parsing and grammar | `[parser]` | 112 |
 | End-to-end SQL | `[e2e]` | 251 |
 | CLI and scripts | `[commands]` | 29 |
 | Storage core | `[storage]` | 38 |
 | Indexing | `[index]` | 21 |
-| Server/integration/auth | `[server]`, `[integration]`, `[auth]` | 6, 6, 5 |
+| Server/integration/auth | `[server]`, `[integration]`, `[auth]` | 8, 8, 6 |
 | ACID evidence matrix | `[acid]`, `[acid-a]`, `[acid-c]`, `[acid-i]`, `[acid-d]` | 19, 1, 3, 5, 11 |
 | Transactions | `[transaction]` | 19 |
 | Locking | `[lock]` | 10 |

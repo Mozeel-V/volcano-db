@@ -113,9 +113,41 @@ Notes:
 2. Output body may be empty (for some commands).
 3. Statements are currently executed serially under a global engine lock.
 
+### Dot commands over TCP
+
+Supported over server protocol:
+
+1. `.help`
+2. `.functions [builtins|udf]`
+3. `.tables`
+4. `.schema <table>`
+5. `.plan` / `.plan dot`
+6. `.triggers`
+7. `.quit` / `.exit` (disconnect)
+
+Not supported over server protocol:
+
+1. `.generate`
+2. `.save`
+3. `.source`
+4. `.benchmark`
+
+For unsupported dot commands, server returns:
+
+```text
+OK
+Command not supported over server protocol: <command>
+END
+```
+
+Authorization behavior in password mode:
+
+1. Dot commands (except `.quit` / `.exit`) require successful authentication first.
+2. `.tables`, `.schema`, `.functions udf`, and `.triggers` are filtered/checked against the authenticated principal.
+
 ## Error handling
 
-- Unknown/invalid commands are treated as SQL input and may fail at parser stage.
+- Unknown non-dot commands are treated as SQL input and may fail at parser stage.
 - Transport errors (disconnects, short writes) terminate the session.
 
 ## Protocol examples

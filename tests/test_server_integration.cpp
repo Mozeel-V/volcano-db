@@ -2,9 +2,11 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <chrono>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <sstream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -259,6 +261,107 @@ static std::pair<std::string, std::vector<std::string>> read_status_and_body(Soc
     return {status, read_until_end(sock)};
 }
 
+static std::string to_hex(const std::vector<uint8_t>& bytes) {
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.reserve(bytes.size() * 2);
+    for (uint8_t b : bytes) {
+        out.push_back(kHex[(b >> 4) & 0xF]);
+        out.push_back(kHex[b & 0xF]);
+    }
+    return out;
+}
+
+static std::array<uint8_t, 32> sha256_bytes(const std::string& data) {
+    auto rotr = [](uint32_t x, uint32_t n) { return (x >> n) | (x << (32 - n)); };
+    auto ch = [](uint32_t x, uint32_t y, uint32_t z) { return (x & y) ^ (~x & z); };
+    auto maj = [](uint32_t x, uint32_t y, uint32_t z) { return (x & y) ^ (x & z) ^ (y & z); };
+    auto bsig0 = [&](uint32_t x) { return rotr(x, 2) ^ rotr(x, 13) ^ rotr(x, 22); };
+    auto bsig1 = [&](uint32_t x) { return rotr(x, 6) ^ rotr(x, 11) ^ rotr(x, 25); };
+    auto ssig0 = [&](uint32_t x) { return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3); };
+    auto ssig1 = [&](uint32_t x) { return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10); };
+
+    static const uint32_t k[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    };
+
+    uint32_t h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+    uint32_t h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+
+    std::vector<uint8_t> msg(data.begin(), data.end());
+    uint64_t bit_len = static_cast<uint64_t>(msg.size()) * 8ULL;
+    msg.push_back(0x80);
+    while ((msg.size() % 64) != 56) msg.push_back(0);
+    for (int i = 7; i >= 0; --i) msg.push_back(static_cast<uint8_t>((bit_len >> (i * 8)) & 0xFF));
+
+    for (size_t off = 0; off < msg.size(); off += 64) {
+        uint32_t w[64] = {0};
+        for (int i = 0; i < 16; i++) {
+            w[i] = (static_cast<uint32_t>(msg[off + i * 4]) << 24) |
+                   (static_cast<uint32_t>(msg[off + i * 4 + 1]) << 16) |
+                   (static_cast<uint32_t>(msg[off + i * 4 + 2]) << 8) |
+                   (static_cast<uint32_t>(msg[off + i * 4 + 3]));
+        }
+        for (int i = 16; i < 64; i++) {
+            w[i] = ssig1(w[i - 2]) + w[i - 7] + ssig0(w[i - 15]) + w[i - 16];
+        }
+
+        uint32_t a = h0, b = h1, c = h2, d = h3;
+        uint32_t e = h4, f = h5, g = h6, h = h7;
+        for (int i = 0; i < 64; i++) {
+            uint32_t t1 = h + bsig1(e) + ch(e, f, g) + k[i] + w[i];
+            uint32_t t2 = bsig0(a) + maj(a, b, c);
+            h = g; g = f; f = e; e = d + t1;
+            d = c; c = b; b = a; a = t1 + t2;
+        }
+        h0 += a; h1 += b; h2 += c; h3 += d;
+        h4 += e; h5 += f; h6 += g; h7 += h;
+    }
+
+    std::array<uint8_t, 32> out{};
+    uint32_t hv[8] = {h0,h1,h2,h3,h4,h5,h6,h7};
+    for (int i = 0; i < 8; i++) {
+        out[i * 4] = static_cast<uint8_t>((hv[i] >> 24) & 0xFF);
+        out[i * 4 + 1] = static_cast<uint8_t>((hv[i] >> 16) & 0xFF);
+        out[i * 4 + 2] = static_cast<uint8_t>((hv[i] >> 8) & 0xFF);
+        out[i * 4 + 3] = static_cast<uint8_t>(hv[i] & 0xFF);
+    }
+    return out;
+}
+
+static std::string sha256_hex(const std::string& data) {
+    const auto digest = sha256_bytes(data);
+    return to_hex(std::vector<uint8_t>(digest.begin(), digest.end()));
+}
+
+static bool authenticate(SocketHandle sock, const std::string& user, const std::string& password) {
+    if (!send_all(sock, "AUTH_START " + user + "\n")) return false;
+    std::string challenge;
+    if (!read_line(sock, challenge)) return false;
+    if (challenge.rfind("AUTH_CHALLENGE ", 0) != 0) return false;
+
+    std::istringstream iss(challenge);
+    std::string tag, salt_hex, nonce, algo;
+    iss >> tag >> salt_hex >> nonce >> algo;
+    if (tag != "AUTH_CHALLENGE" || salt_hex.empty() || nonce.empty()) return false;
+    if (algo != "sha256") return false;
+
+    const std::string verifier = sha256_hex(salt_hex + password);
+    const std::string proof = sha256_hex(verifier + nonce);
+    if (!send_all(sock, "AUTH_PROOF " + proof + "\n")) return false;
+
+    std::string result;
+    if (!read_line(sock, result)) return false;
+    return result.rfind("AUTH_OK ", 0) == 0;
+}
+
 } // namespace
 
 TEST_CASE("Server protocol: handshake, ping, quit", "[server][integration]") {
@@ -498,6 +601,57 @@ TEST_CASE("Server protocol: partial SQL yields CONTINUE and supports disconnect"
     close_socket_handle(client2);
 }
 
+TEST_CASE("Server protocol: dot commands are supported over network", "[server][integration]") {
+    DurabilityFileScope durability_scope;
+#ifdef _WIN32
+    WinSockScope ws;
+    REQUIRE(ws.ok());
+#endif
+
+    const uint16_t port = reserve_ephemeral_port();
+    REQUIRE(port != 0);
+
+    ServerProcess server(port);
+    REQUIRE(server.running());
+
+    SocketHandle client = connect_with_retry(port);
+    REQUIRE(client != kInvalidSocket);
+
+    std::string session;
+    REQUIRE(read_handshake(client, session));
+
+    REQUIRE(send_all(client, "CREATE TABLE net_dot(id INT);\n"));
+    auto [create_status, create_body] = read_status_and_body(client);
+    CHECK(create_status == "OK");
+
+    REQUIRE(send_all(client, ".tables\n"));
+    auto [tables_status, tables_body] = read_status_and_body(client);
+    CHECK(tables_status == "OK");
+    std::string tables_text;
+    for (const auto& line : tables_body) {
+        tables_text += line;
+        tables_text.push_back('\n');
+    }
+    CHECK_THAT(tables_text, Catch::Matchers::ContainsSubstring("net_dot"));
+
+    REQUIRE(send_all(client, ".schema net_dot\n"));
+    auto [schema_status, schema_body] = read_status_and_body(client);
+    CHECK(schema_status == "OK");
+    std::string schema_text;
+    for (const auto& line : schema_body) {
+        schema_text += line;
+        schema_text.push_back('\n');
+    }
+    CHECK_THAT(schema_text, Catch::Matchers::ContainsSubstring("Table: net_dot"));
+    CHECK_THAT(schema_text, Catch::Matchers::ContainsSubstring("id INT"));
+
+    REQUIRE(send_all(client, "QUIT\n"));
+    std::string bye;
+    REQUIRE(read_line(client, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(client);
+}
+
 TEST_CASE("Server protocol: password auth requires login", "[server][integration][auth]") {
     DurabilityFileScope durability_scope;
 #ifdef _WIN32
@@ -556,4 +710,97 @@ TEST_CASE("Server protocol: password auth requires login", "[server][integration
     REQUIRE(read_line(client, bye));
     CHECK(bye == "BYE");
     close_socket_handle(client);
+}
+
+TEST_CASE("Server protocol: authenticated principal sees only authorized metadata", "[server][integration][auth]") {
+    DurabilityFileScope durability_scope;
+#ifdef _WIN32
+    WinSockScope ws;
+    REQUIRE(ws.ok());
+#endif
+
+    const uint16_t port = reserve_ephemeral_port();
+    REQUIRE(port != 0);
+
+    ServerProcess server(port, true);
+    REQUIRE(server.running());
+
+    SocketHandle admin = connect_with_retry(port);
+    REQUIRE(admin != kInvalidSocket);
+    std::string session;
+    REQUIRE(read_handshake(admin, session));
+    REQUIRE(authenticate(admin, "admin", "admin"));
+
+    auto exec_ok = [&](const std::string& sql) {
+        REQUIRE(send_all(admin, sql + "\n"));
+        auto [status, body] = read_status_and_body(admin);
+        CHECK(status == "OK");
+        (void)body;
+    };
+
+    exec_ok("CREATE TABLE auth_t1(id INT);");
+    exec_ok("CREATE TABLE auth_t2(id INT);");
+    exec_ok("CREATE VIEW auth_v1 AS SELECT id FROM auth_t1;");
+    exec_ok("CREATE FUNCTION auth_fn(x INT) RETURNS INT AS 'x + 1';");
+    exec_ok("CREATE USER alice IDENTIFIED BY 'alicepw';");
+    exec_ok("GRANT SELECT ON TABLE auth_t1 TO alice;");
+    exec_ok("GRANT SELECT ON VIEW auth_v1 TO alice;");
+
+    REQUIRE(send_all(admin, "QUIT\n"));
+    std::string bye;
+    REQUIRE(read_line(admin, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(admin);
+
+    SocketHandle alice = connect_with_retry(port);
+    REQUIRE(alice != kInvalidSocket);
+    REQUIRE(read_handshake(alice, session));
+    REQUIRE(authenticate(alice, "alice", "alicepw"));
+
+    REQUIRE(send_all(alice, ".tables\n"));
+    auto [tables_status, tables_body] = read_status_and_body(alice);
+    CHECK(tables_status == "OK");
+    std::string tables_text;
+    for (const auto& line : tables_body) {
+        tables_text += line;
+        tables_text.push_back('\n');
+    }
+    CHECK_THAT(tables_text, Catch::Matchers::ContainsSubstring("auth_t1"));
+    CHECK_THAT(tables_text, Catch::Matchers::ContainsSubstring("auth_v1"));
+    CHECK(tables_text.find("auth_t2") == std::string::npos);
+
+    REQUIRE(send_all(alice, ".schema auth_t2\n"));
+    auto [schema2_status, schema2_body] = read_status_and_body(alice);
+    CHECK(schema2_status == "OK");
+    std::string schema2_text;
+    for (const auto& line : schema2_body) {
+        schema2_text += line;
+        schema2_text.push_back('\n');
+    }
+    CHECK_THAT(schema2_text, Catch::Matchers::ContainsSubstring("Permission denied"));
+
+    REQUIRE(send_all(alice, ".schema auth_v1\n"));
+    auto [schema_v_status, schema_v_body] = read_status_and_body(alice);
+    CHECK(schema_v_status == "OK");
+    std::string schema_v_text;
+    for (const auto& line : schema_v_body) {
+        schema_v_text += line;
+        schema_v_text.push_back('\n');
+    }
+    CHECK_THAT(schema_v_text, Catch::Matchers::ContainsSubstring("View: auth_v1"));
+
+    REQUIRE(send_all(alice, ".functions udf\n"));
+    auto [fn_status, fn_body] = read_status_and_body(alice);
+    CHECK(fn_status == "OK");
+    std::string fn_text;
+    for (const auto& line : fn_body) {
+        fn_text += line;
+        fn_text.push_back('\n');
+    }
+    CHECK(fn_text.find("auth_fn") == std::string::npos);
+
+    REQUIRE(send_all(alice, "QUIT\n"));
+    REQUIRE(read_line(alice, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(alice);
 }
