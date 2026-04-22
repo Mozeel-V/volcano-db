@@ -918,3 +918,118 @@ TEST_CASE("Server protocol: repeated failed auth triggers lockout", "[server][in
     CHECK(bye == "BYE");
     close_socket_handle(client);
 }
+
+TEST_CASE("Server protocol: grant revoke matrix and ownership override", "[server][integration][auth]") {
+    DurabilityFileScope durability_scope;
+#ifdef _WIN32
+    WinSockScope ws;
+    REQUIRE(ws.ok());
+#endif
+
+    const uint16_t port = reserve_ephemeral_port();
+    REQUIRE(port != 0);
+
+    ServerProcess server(port, true);
+    REQUIRE(server.running());
+
+    SocketHandle admin = connect_with_retry(port);
+    REQUIRE(admin != kInvalidSocket);
+    std::string session;
+    REQUIRE(read_handshake(admin, session));
+    REQUIRE(authenticate(admin, "admin", "admin"));
+
+    auto exec_admin = [&](const std::string& sql) {
+        REQUIRE(send_all(admin, sql + "\n"));
+        auto [status, body] = read_status_and_body(admin);
+        CHECK(status == "OK");
+        return body;
+    };
+
+    exec_admin("CREATE USER bob IDENTIFIED BY 'bobpw';");
+    exec_admin("CREATE TABLE g_t(id INT);");
+    exec_admin("INSERT INTO g_t VALUES (1);");
+    exec_admin("CREATE VIEW g_v AS SELECT id FROM g_t;");
+    exec_admin("CREATE FUNCTION g_fn(x INT) RETURNS INT AS 'x + 1';");
+
+    exec_admin("GRANT SELECT ON TABLE g_t TO bob;");
+    exec_admin("GRANT SELECT ON VIEW g_v TO bob;");
+    exec_admin("GRANT EXECUTE ON FUNCTION g_fn TO bob;");
+
+    REQUIRE(send_all(admin, "QUIT\n"));
+    std::string bye;
+    REQUIRE(read_line(admin, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(admin);
+
+    SocketHandle bob = connect_with_retry(port);
+    REQUIRE(bob != kInvalidSocket);
+    REQUIRE(read_handshake(bob, session));
+    REQUIRE(authenticate(bob, "bob", "bobpw"));
+
+    REQUIRE(send_all(bob, "SELECT id FROM g_t;\n"));
+    auto [sel_ok_status, sel_ok_body] = read_status_and_body(bob);
+    CHECK(sel_ok_status == "OK");
+
+    REQUIRE(send_all(bob, ".functions udf\n"));
+    auto [fn_status_before, fn_body_before] = read_status_and_body(bob);
+    CHECK(fn_status_before == "OK");
+    std::string fn_before_text;
+    for (const auto& line : fn_body_before) {
+        fn_before_text += line;
+        fn_before_text.push_back('\n');
+    }
+    CHECK_THAT(fn_before_text, Catch::Matchers::ContainsSubstring("g_fn"));
+
+    REQUIRE(send_all(bob, "CREATE TABLE bob_own(id INT);\n"));
+    auto [own_create_status, own_create_body] = read_status_and_body(bob);
+    CHECK(own_create_status == "OK");
+    REQUIRE(send_all(bob, "DROP TABLE bob_own;\n"));
+    auto [own_drop_status, own_drop_body] = read_status_and_body(bob);
+    CHECK(own_drop_status == "OK");
+
+    REQUIRE(send_all(bob, "QUIT\n"));
+    REQUIRE(read_line(bob, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(bob);
+
+    admin = connect_with_retry(port);
+    REQUIRE(admin != kInvalidSocket);
+    REQUIRE(read_handshake(admin, session));
+    REQUIRE(authenticate(admin, "admin", "admin"));
+    exec_admin("REVOKE SELECT ON TABLE g_t FROM bob;");
+    exec_admin("REVOKE EXECUTE ON FUNCTION g_fn FROM bob;");
+    REQUIRE(send_all(admin, "QUIT\n"));
+    REQUIRE(read_line(admin, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(admin);
+
+    bob = connect_with_retry(port);
+    REQUIRE(bob != kInvalidSocket);
+    REQUIRE(read_handshake(bob, session));
+    REQUIRE(authenticate(bob, "bob", "bobpw"));
+
+    REQUIRE(send_all(bob, "SELECT id FROM g_t;\n"));
+    auto [sel_denied_status, sel_denied_body] = read_status_and_body(bob);
+    CHECK(sel_denied_status == "ERROR");
+    std::string sel_denied_text;
+    for (const auto& line : sel_denied_body) {
+        sel_denied_text += line;
+        sel_denied_text.push_back('\n');
+    }
+    CHECK_THAT(sel_denied_text, Catch::Matchers::ContainsSubstring("permission_denied"));
+
+    REQUIRE(send_all(bob, ".functions udf\n"));
+    auto [fn_status_after, fn_body_after] = read_status_and_body(bob);
+    CHECK(fn_status_after == "OK");
+    std::string fn_after_text;
+    for (const auto& line : fn_body_after) {
+        fn_after_text += line;
+        fn_after_text.push_back('\n');
+    }
+    CHECK(fn_after_text.find("g_fn") == std::string::npos);
+
+    REQUIRE(send_all(bob, "QUIT\n"));
+    REQUIRE(read_line(bob, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(bob);
+}
