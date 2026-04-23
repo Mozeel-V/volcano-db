@@ -40,7 +40,13 @@ class Connection:
         self._file = self._sock.makefile("rwb", buffering=0)
         self.session = self._read_handshake()
         if user is not None:
-            self._authenticate(user=user, password=password or "")
+            try:
+                self._authenticate(user=user, password=password or "")
+            except Exception:
+                # Avoid leaking socket/file handles when auth fails during connect.
+                self._file.close()
+                self._sock.close()
+                raise
 
     def _readline(self) -> str:
         raw = self._file.readline()

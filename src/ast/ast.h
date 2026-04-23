@@ -5,6 +5,7 @@
 #include <variant>
 #include <iostream>
 #include <sstream>
+#include <cstdint>
 
 namespace ast {
 

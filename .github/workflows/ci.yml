@@ -55,6 +55,11 @@ jobs:
         run: |
           npm --prefix clients/node test
 
+      - name: Run Python integration tests
+        shell: powershell
+        run: |
+          conda run -n base python -m unittest -v clients/python/test_integration.py
+
       - name: Run Python and Node smoke tests against live server
         shell: powershell
         run: |

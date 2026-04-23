@@ -163,6 +163,12 @@ Python native client smoke test:
 python clients/python/smoke_test.py --host 127.0.0.1 --port 54330
 ```
 
+Python client integration tests:
+
+```bash
+python -m unittest -v clients/python/test_integration.py
+```
+
 Node native client smoke test:
 
 ```bash
