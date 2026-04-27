@@ -53,16 +53,19 @@ jobs:
       - name: Run Node integration tests
         shell: powershell
         run: |
+          $env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:PATH"
           npm --prefix clients/node test
 
       - name: Run Python integration tests
         shell: powershell
         run: |
+          $env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:PATH"
           conda run -n base python -m unittest -v clients/python/test_integration.py
 
       - name: Run Python and Node smoke tests against live server
         shell: powershell
         run: |
+          $env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:PATH"
           $server = Start-Process -FilePath ".\build\vdb.exe" -ArgumentList "--server","--host","127.0.0.1","--port","54330" -PassThru -WindowStyle Hidden
           try {
             Start-Sleep -Seconds 2
@@ -74,3 +77,57 @@ jobs:
               Stop-Process -Id $server.Id -Force
             }
           }
+
+  unix-server-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Unix build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake flex bison make
+
+      - name: Configure and build
+        shell: bash
+        run: |
+          cmake -S . -B build
+          cmake --build build
+
+      - name: Run C++ server integration tests
+        shell: bash
+        run: |
+          ctest --test-dir build --output-on-failure -R "server|Server|integration"
+
+      - name: Run Node integration tests
+        shell: bash
+        run: |
+          npm --prefix clients/node test
+
+      - name: Run Python integration tests
+        shell: bash
+        run: |
+          python3 -m unittest -v clients/python/test_integration.py
+
+      - name: Run Python and Node smoke tests against live server
+        shell: bash
+        run: |
+          ./build/vdb --server --host 127.0.0.1 --port 54330 &
+          server_pid=$!
+          trap 'kill $server_pid 2>/dev/null || true' EXIT
+          sleep 2
+          python3 clients/python/smoke_test.py --host 127.0.0.1 --port 54330
+          node clients/node/smoke_test.js --host 127.0.0.1 --port 54330

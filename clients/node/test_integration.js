@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 const net = require("node:net");
 const { connect } = require("./vdb_client");
@@ -24,6 +25,9 @@ async function startServer(host, port) {
 
 async function startServerWithOptions({ host, port, authMode = null }) {
   const exe = serverBinaryPath();
+  if (!fs.existsSync(exe)) {
+    throw new Error(`Server binary not found at: ${exe}`);
+  }
   const args = ["--server", "--host", host, "--port", String(port)];
   if (authMode) {
     args.push("--auth-mode", authMode);
@@ -34,6 +38,11 @@ async function startServerWithOptions({ host, port, authMode = null }) {
   });
 
   let stderr = "";
+  let stdout = "";
+
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+  });
 
   child.stderr.on("data", (chunk) => {
     stderr += chunk.toString("utf8");
@@ -41,7 +50,11 @@ async function startServerWithOptions({ host, port, authMode = null }) {
 
   for (let i = 0; i < 40; i += 1) {
     if (child.exitCode !== null) {
-      throw new Error(`Server exited early (code=${child.exitCode}): ${stderr}`);
+      throw new Error(
+        `Server exited early (code=${child.exitCode})\n` +
+        `exe=${exe}\nargs=${args.join(" ")}\n` +
+        `stdout=${stdout}\nstderr=${stderr}`,
+      );
     }
     const reachable = await new Promise((resolve) => {
       const probe = net.createConnection({ host, port });
