@@ -236,6 +236,7 @@ ROLLBACK;
 | `.functions [builtins\|udf]` | List built-in and/or user-defined SQL functions |
 | `.tables` | List loaded tables |
 | `.schema <table>` | Show table schema |
+| `.principal [user\|off]` | In local REPL, switch/show principal for auth-aware SQL and metadata filtering |
 | `.generate <n>` | Generate sample data with n employee rows |
 | `.save <file>` | Save all current tables to a formatted text file (creates or overwrites) |
 | `.source <file>` | Execute SQL commands from a file |
@@ -458,13 +459,13 @@ Tag snapshot from `./vdb_tests --list-tags` (counts are per-tag and overlap acro
 
 | Area | Tag(s) | Cases |
 |------|--------|------:|
-| **Total suite** | `all` | **460** |
+| **Total suite** | `all` | **466** |
 | Parsing and grammar | `[parser]` | 112 |
 | End-to-end SQL | `[e2e]` | 251 |
-| CLI and scripts | `[commands]` | 29 |
+| CLI and scripts | `[commands]` | 31 |
 | Storage core | `[storage]` | 38 |
 | Indexing | `[index]` | 21 |
-| Server/integration/auth | `[server]`, `[integration]`, `[auth]` | 11, 11, 9 |
+| Server/integration/auth | `[server]`, `[integration]`, `[auth]` | 15, 15, 15 |
 | ACID evidence matrix | `[acid]`, `[acid-a]`, `[acid-c]`, `[acid-i]`, `[acid-d]` | 19, 1, 3, 5, 11 |
 | Transactions | `[transaction]` | 19 |
 | Locking | `[lock]` | 10 |

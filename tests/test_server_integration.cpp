@@ -82,12 +82,17 @@ public:
 
 class ServerProcess {
 public:
-    explicit ServerProcess(uint16_t port, bool password_auth = false) {
+    explicit ServerProcess(uint16_t port,
+                           bool password_auth = false,
+                           int auth_nonce_ttl_sec = 90,
+                           int auth_lockout_sec = 60) {
 #ifdef _WIN32
         std::string cmd = ".\\vdb.exe --server --host 127.0.0.1 --port " + std::to_string(port);
         if (password_auth) {
             cmd += " --auth-mode password";
         }
+        cmd += " --auth-nonce-ttl-sec " + std::to_string(auth_nonce_ttl_sec);
+        cmd += " --auth-lockout-sec " + std::to_string(auth_lockout_sec);
 
         STARTUPINFOA si{};
         PROCESS_INFORMATION pi{};
@@ -114,12 +119,25 @@ public:
 #else
         pid_ = fork();
         if (pid_ == 0) {
-            std::string p = std::to_string(port);
+            std::vector<std::string> args = {
+                "./vdb",
+                "--server",
+                "--host", "127.0.0.1",
+                "--port", std::to_string(port),
+                "--auth-nonce-ttl-sec", std::to_string(auth_nonce_ttl_sec),
+                "--auth-lockout-sec", std::to_string(auth_lockout_sec),
+            };
             if (password_auth) {
-                execl("./vdb", "vdb", "--server", "--host", "127.0.0.1", "--port", p.c_str(), "--auth-mode", "password", (char*)nullptr);
-            } else {
-                execl("./vdb", "vdb", "--server", "--host", "127.0.0.1", "--port", p.c_str(), (char*)nullptr);
+                args.push_back("--auth-mode");
+                args.push_back("password");
             }
+            std::vector<char*> argv;
+            argv.reserve(args.size() + 1);
+            for (auto& s : args) {
+                argv.push_back(s.data());
+            }
+            argv.push_back(nullptr);
+            execv("./vdb", argv.data());
             _exit(127);
         }
         running_ = (pid_ > 0);
@@ -917,6 +935,286 @@ TEST_CASE("Server protocol: repeated failed auth triggers lockout", "[server][in
     REQUIRE(read_line(client, bye));
     CHECK(bye == "BYE");
     close_socket_handle(client);
+}
+
+TEST_CASE("Server protocol: nonce expires after configured TTL", "[server][integration][auth]") {
+    DurabilityFileScope durability_scope;
+#ifdef _WIN32
+    WinSockScope ws;
+    REQUIRE(ws.ok());
+#endif
+
+    const uint16_t port = reserve_ephemeral_port();
+    REQUIRE(port != 0);
+
+    ServerProcess server(port, true, 1, 60);
+    REQUIRE(server.running());
+
+    SocketHandle client = connect_with_retry(port);
+    REQUIRE(client != kInvalidSocket);
+    std::string session;
+    REQUIRE(read_handshake(client, session));
+
+    std::string salt, nonce, line;
+    REQUIRE(start_auth_challenge(client, "admin", salt, nonce, line));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    const std::string verifier = sha256_hex(salt + std::string("admin"));
+    const std::string proof = sha256_hex(verifier + nonce);
+    REQUIRE(send_all(client, "AUTH_PROOF " + proof + "\n"));
+
+    std::string expired;
+    REQUIRE(read_line(client, expired));
+    CHECK(expired == "AUTH_ERROR auth_nonce_expired");
+
+    REQUIRE(send_all(client, "QUIT\n"));
+    std::string bye;
+    REQUIRE(read_line(client, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(client);
+}
+
+TEST_CASE("Server protocol: lockout expires and auth can recover", "[server][integration][auth]") {
+    DurabilityFileScope durability_scope;
+#ifdef _WIN32
+    WinSockScope ws;
+    REQUIRE(ws.ok());
+#endif
+
+    const uint16_t port = reserve_ephemeral_port();
+    REQUIRE(port != 0);
+
+    ServerProcess server(port, true, 90, 1);
+    REQUIRE(server.running());
+
+    SocketHandle client = connect_with_retry(port);
+    REQUIRE(client != kInvalidSocket);
+    std::string session;
+    REQUIRE(read_handshake(client, session));
+
+    for (int i = 0; i < 3; i++) {
+        std::string salt, nonce, line;
+        REQUIRE(start_auth_challenge(client, "admin", salt, nonce, line));
+        REQUIRE(send_all(client, "AUTH_PROOF deadbeef\n"));
+        std::string err;
+        REQUIRE(read_line(client, err));
+        CHECK(err == "AUTH_ERROR auth_failed");
+    }
+
+    REQUIRE(send_all(client, "AUTH_START admin\n"));
+    std::string locked;
+    REQUIRE(read_line(client, locked));
+    CHECK(locked == "AUTH_ERROR auth_locked");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    std::string salt2, nonce2, line2;
+    REQUIRE(start_auth_challenge(client, "admin", salt2, nonce2, line2));
+    const std::string verifier2 = sha256_hex(salt2 + std::string("admin"));
+    const std::string proof2 = sha256_hex(verifier2 + nonce2);
+    REQUIRE(send_all(client, "AUTH_PROOF " + proof2 + "\n"));
+    std::string ok;
+    REQUIRE(read_line(client, ok));
+    CHECK_THAT(ok, Catch::Matchers::StartsWith("AUTH_OK "));
+
+    REQUIRE(send_all(client, "QUIT\n"));
+    std::string bye;
+    REQUIRE(read_line(client, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(client);
+}
+
+TEST_CASE("Server protocol: view source-read and table owner alter-drop-index edges", "[server][integration][auth]") {
+    DurabilityFileScope durability_scope;
+#ifdef _WIN32
+    WinSockScope ws;
+    REQUIRE(ws.ok());
+#endif
+
+    const uint16_t port = reserve_ephemeral_port();
+    REQUIRE(port != 0);
+
+    ServerProcess server(port, true);
+    REQUIRE(server.running());
+
+    SocketHandle admin = connect_with_retry(port);
+    REQUIRE(admin != kInvalidSocket);
+    std::string session;
+    REQUIRE(read_handshake(admin, session));
+    REQUIRE(authenticate(admin, "admin", "admin"));
+
+    auto exec_admin = [&](const std::string& sql) {
+        REQUIRE(send_all(admin, sql + "\n"));
+        auto [status, body] = read_status_and_body(admin);
+        CHECK(status == "OK");
+        return body;
+    };
+
+    exec_admin("CREATE USER edge_user IDENTIFIED BY 'edgepw';");
+    exec_admin("CREATE TABLE src_tbl(id INT);");
+    exec_admin("INSERT INTO src_tbl VALUES (7);");
+
+    REQUIRE(send_all(admin, "QUIT\n"));
+    std::string bye;
+    REQUIRE(read_line(admin, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(admin);
+
+    SocketHandle user = connect_with_retry(port);
+    REQUIRE(user != kInvalidSocket);
+    REQUIRE(read_handshake(user, session));
+    REQUIRE(authenticate(user, "edge_user", "edgepw"));
+
+    // Source-read permission is required to create views over a table.
+    REQUIRE(send_all(user, "CREATE VIEW edge_v AS SELECT id FROM src_tbl;\n"));
+    auto [view_denied_status, view_denied_body] = read_status_and_body(user);
+    CHECK(view_denied_status == "ERROR");
+    std::string view_denied_text;
+    for (const auto& line : view_denied_body) {
+        view_denied_text += line;
+        view_denied_text.push_back('\n');
+    }
+    CHECK_THAT(view_denied_text, Catch::Matchers::ContainsSubstring("permission_denied"));
+
+    REQUIRE(send_all(user, "CREATE MATERIALIZED VIEW edge_mv AS SELECT id FROM src_tbl;\n"));
+    auto [mv_denied_status, mv_denied_body] = read_status_and_body(user);
+    CHECK(mv_denied_status == "ERROR");
+    std::string mv_denied_text;
+    for (const auto& line : mv_denied_body) {
+        mv_denied_text += line;
+        mv_denied_text.push_back('\n');
+    }
+    CHECK_THAT(mv_denied_text, Catch::Matchers::ContainsSubstring("permission_denied"));
+
+    // As owner of own_table, user should be able to ALTER/INDEX/DROP without explicit grants.
+    REQUIRE(send_all(user, "CREATE TABLE own_table(id INT);\n"));
+    auto [own_create_status, own_create_body] = read_status_and_body(user);
+    CHECK(own_create_status == "OK");
+
+    REQUIRE(send_all(user, "ALTER TABLE own_table ADD COLUMN note VARCHAR;\n"));
+    auto [own_alter_status, own_alter_body] = read_status_and_body(user);
+    CHECK(own_alter_status == "OK");
+
+    REQUIRE(send_all(user, "CREATE INDEX own_idx ON own_table(id);\n"));
+    auto [own_index_status, own_index_body] = read_status_and_body(user);
+    CHECK(own_index_status == "OK");
+
+    REQUIRE(send_all(user, "DROP INDEX own_idx;\n"));
+    auto [own_drop_index_status, own_drop_index_body] = read_status_and_body(user);
+    CHECK(own_drop_index_status == "OK");
+
+    REQUIRE(send_all(user, "DROP TABLE own_table;\n"));
+    auto [own_drop_table_status, own_drop_table_body] = read_status_and_body(user);
+    CHECK(own_drop_table_status == "OK");
+
+    REQUIRE(send_all(user, "QUIT\n"));
+    REQUIRE(read_line(user, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(user);
+
+    admin = connect_with_retry(port);
+    REQUIRE(admin != kInvalidSocket);
+    REQUIRE(read_handshake(admin, session));
+    REQUIRE(authenticate(admin, "admin", "admin"));
+    exec_admin("GRANT SELECT ON TABLE src_tbl TO edge_user;");
+    REQUIRE(send_all(admin, "QUIT\n"));
+    REQUIRE(read_line(admin, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(admin);
+
+    user = connect_with_retry(port);
+    REQUIRE(user != kInvalidSocket);
+    REQUIRE(read_handshake(user, session));
+    REQUIRE(authenticate(user, "edge_user", "edgepw"));
+
+    REQUIRE(send_all(user, "CREATE VIEW edge_v_ok AS SELECT id FROM src_tbl;\n"));
+    auto [view_ok_status, view_ok_body] = read_status_and_body(user);
+    CHECK(view_ok_status == "OK");
+
+    REQUIRE(send_all(user, "CREATE MATERIALIZED VIEW edge_mv_ok AS SELECT id FROM src_tbl;\n"));
+    auto [mv_ok_status, mv_ok_body] = read_status_and_body(user);
+    CHECK(mv_ok_status == "OK");
+
+    REQUIRE(send_all(user, "QUIT\n"));
+    REQUIRE(read_line(user, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(user);
+}
+
+TEST_CASE("Server protocol: statement auth matrix for create and truncate paths", "[server][integration][auth]") {
+    DurabilityFileScope durability_scope;
+#ifdef _WIN32
+    WinSockScope ws;
+    REQUIRE(ws.ok());
+#endif
+
+    const uint16_t port = reserve_ephemeral_port();
+    REQUIRE(port != 0);
+
+    ServerProcess server(port, true);
+    REQUIRE(server.running());
+
+    SocketHandle admin = connect_with_retry(port);
+    REQUIRE(admin != kInvalidSocket);
+    std::string session;
+    REQUIRE(read_handshake(admin, session));
+    REQUIRE(authenticate(admin, "admin", "admin"));
+
+    auto exec_admin = [&](const std::string& sql) {
+        REQUIRE(send_all(admin, sql + "\n"));
+        auto [status, body] = read_status_and_body(admin);
+        CHECK(status == "OK");
+        return body;
+    };
+
+    exec_admin("CREATE USER auth_stmt_user IDENTIFIED BY 'authpw';");
+    exec_admin("CREATE TABLE admin_t(id INT);");
+    exec_admin("INSERT INTO admin_t VALUES (1);");
+
+    REQUIRE(send_all(admin, "QUIT\n"));
+    std::string bye;
+    REQUIRE(read_line(admin, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(admin);
+
+    SocketHandle user = connect_with_retry(port);
+    REQUIRE(user != kInvalidSocket);
+    REQUIRE(read_handshake(user, session));
+    REQUIRE(authenticate(user, "auth_stmt_user", "authpw"));
+
+    REQUIRE(send_all(user, "CREATE TABLE user_t(id INT);\n"));
+    auto [create_table_status, create_table_body] = read_status_and_body(user);
+    CHECK(create_table_status == "OK");
+
+    REQUIRE(send_all(user, "CREATE FUNCTION user_fn(x INT) RETURNS INT AS 'x + 1';\n"));
+    auto [create_fn_status, create_fn_body] = read_status_and_body(user);
+    CHECK(create_fn_status == "OK");
+
+    REQUIRE(send_all(user, "INSERT INTO user_t VALUES (7);\n"));
+    auto [insert_user_status, insert_user_body] = read_status_and_body(user);
+    CHECK(insert_user_status == "OK");
+
+    REQUIRE(send_all(user, "TRUNCATE user_t;\n"));
+    auto [truncate_own_status, truncate_own_body] = read_status_and_body(user);
+    CHECK(truncate_own_status == "OK");
+
+    REQUIRE(send_all(user, "TRUNCATE admin_t;\n"));
+    auto [truncate_denied_status, truncate_denied_body] = read_status_and_body(user);
+    CHECK(truncate_denied_status == "ERROR");
+    std::string truncate_denied_text;
+    for (const auto& line : truncate_denied_body) {
+        truncate_denied_text += line;
+        truncate_denied_text.push_back('\n');
+    }
+    CHECK_THAT(truncate_denied_text, Catch::Matchers::ContainsSubstring("permission_denied"));
+
+    REQUIRE(send_all(user, "DROP FUNCTION user_fn;\n"));
+    auto [drop_fn_status, drop_fn_body] = read_status_and_body(user);
+    CHECK(drop_fn_status == "OK");
+
+    REQUIRE(send_all(user, "QUIT\n"));
+    REQUIRE(read_line(user, bye));
+    CHECK(bye == "BYE");
+    close_socket_handle(user);
 }
 
 TEST_CASE("Server protocol: grant revoke matrix and ownership override", "[server][integration][auth]") {

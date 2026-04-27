@@ -48,6 +48,12 @@ enum class ServerAuthMode {
     PASSWORD,
 };
 
+struct ServerAuthPolicy {
+    std::chrono::seconds nonce_ttl{90};
+    std::chrono::seconds lockout_duration{60};
+    int max_failed_attempts = 3;
+};
+
 static storage::Value dml_eval(const ast::ExprPtr& e, const storage::Table* tbl, const storage::Row& row) {
     if (!e) return std::monostate{};
     switch (e->type) {
@@ -161,6 +167,8 @@ Simple Query Processor -- Commands:
                                         List built-in and/or user-defined functions
     .tables         List loaded tables
     .schema <tbl>   Show table schema
+        .principal [user|off]
+                                        Set/show local REPL principal for auth-aware SQL and metadata filtering
     .generate <n>   Generate sample data (n rows)
     .save <file>    Save all current tables to a text file
     .source <file>  Execute SQL commands from file
@@ -713,17 +721,45 @@ static bool statement_mutates_catalog(ast::StmtType type) {
 
 static bool statement_requires_authorization(ast::StmtType type) {
     switch (type) {
+        case ast::StmtType::ST_BEGIN_TXN:
+        case ast::StmtType::ST_COMMIT_TXN:
+        case ast::StmtType::ST_ROLLBACK_TXN:
         case ast::StmtType::ST_CREATE_USER:
         case ast::StmtType::ST_ALTER_USER:
         case ast::StmtType::ST_DROP_USER:
         case ast::StmtType::ST_GRANT:
         case ast::StmtType::ST_REVOKE:
             return false;
+
+        case ast::StmtType::ST_SELECT:
+        case ast::StmtType::ST_EXPLAIN:
+        case ast::StmtType::ST_BENCHMARK:
+        case ast::StmtType::ST_CREATE_TABLE:
+        case ast::StmtType::ST_CREATE_INDEX:
+        case ast::StmtType::ST_CREATE_VIEW:
+        case ast::StmtType::ST_CREATE_MATERIALIZED_VIEW:
+        case ast::StmtType::ST_INSERT:
+        case ast::StmtType::ST_UPDATE:
+        case ast::StmtType::ST_DELETE:
+        case ast::StmtType::ST_LOAD:
+        case ast::StmtType::ST_ALTER_ADD_COL:
+        case ast::StmtType::ST_ALTER_DROP_COL:
+        case ast::StmtType::ST_ALTER_RENAME_COL:
+        case ast::StmtType::ST_ALTER_RENAME_TBL:
+        case ast::StmtType::ST_DROP_TABLE:
+        case ast::StmtType::ST_DROP_INDEX:
+        case ast::StmtType::ST_DROP_VIEW:
+        case ast::StmtType::ST_CREATE_FUNCTION:
+        case ast::StmtType::ST_DROP_FUNCTION:
+        case ast::StmtType::ST_TRUNCATE:
+        case ast::StmtType::ST_MERGE:
+        case ast::StmtType::ST_CREATE_TRIGGER:
+        case ast::StmtType::ST_DROP_TRIGGER:
+            return true;
+
         default:
-            return statement_mutates_catalog(type) ||
-                   type == ast::StmtType::ST_SELECT ||
-                   type == ast::StmtType::ST_EXPLAIN ||
-                   type == ast::StmtType::ST_BENCHMARK;
+            // Secure default: new statement families require an explicit auth decision.
+            return true;
     }
 }
 
@@ -748,6 +784,11 @@ static bool check_statement_authorization(const ast::Statement& stmt,
     };
 
     switch (stmt.type) {
+        case ast::StmtType::ST_BEGIN_TXN:
+        case ast::StmtType::ST_COMMIT_TXN:
+        case ast::StmtType::ST_ROLLBACK_TXN:
+            return true;
+
         case ast::StmtType::ST_SELECT:
         case ast::StmtType::ST_EXPLAIN:
         case ast::StmtType::ST_BENCHMARK: {
@@ -762,6 +803,10 @@ static bool check_statement_authorization(const ast::Statement& stmt,
             }
             return true;
         }
+
+        case ast::StmtType::ST_CREATE_TABLE:
+            return true;
+
         case ast::StmtType::ST_CREATE_VIEW:
         case ast::StmtType::ST_CREATE_MATERIALIZED_VIEW: {
             if (!stmt.create_view || !stmt.create_view->query) return true;
@@ -842,8 +887,15 @@ static bool check_statement_authorization(const ast::Statement& stmt,
             return true;
         case ast::StmtType::ST_DROP_FUNCTION:
             return require("FUNCTION", stmt.drop_name, storage::Catalog::Privilege::PRIV_DROP);
-        default:
+        case ast::StmtType::ST_CREATE_USER:
+        case ast::StmtType::ST_ALTER_USER:
+        case ast::StmtType::ST_DROP_USER:
+        case ast::StmtType::ST_GRANT:
+        case ast::StmtType::ST_REVOKE:
             return true;
+        default:
+            auth_error = "permission_denied: no authorization rule for statement " + std::string(statement_type_name(stmt.type));
+            return false;
     }
 }
 
@@ -1855,7 +1907,9 @@ static bool handle_dot_command(const std::string& line,
                                storage::WalManager& wal_manager,
                                const std::string& current_user = "local_admin",
                                bool enforce_authorization = false,
-                               bool is_remote = false) {
+                               bool is_remote = false,
+                               std::string* local_principal = nullptr,
+                               bool* local_enforce_authorization = nullptr) {
     auto can_read_table = [&](const std::string& table_name) {
         if (!enforce_authorization) return true;
         return catalog.has_privilege(current_user, "TABLE", table_name, storage::Catalog::Privilege::PRIV_SELECT);
@@ -1879,6 +1933,44 @@ static bool handle_dot_command(const std::string& line,
     if (line == ".quit" || line == ".exit") return false;
     if (line == ".help") {
         print_help();
+        return true;
+    }
+    if (starts_with(line, ".principal")) {
+        if (line.size() > 10 && line[10] != ' ') {
+            std::cout << "Unknown command: " << line << "\n";
+            return true;
+        }
+        if (is_remote) {
+            std::cout << "Command not supported over server protocol: .principal\n";
+            return true;
+        }
+        if (!local_principal || !local_enforce_authorization) {
+            std::cout << "Error: local principal context unavailable.\n";
+            return true;
+        }
+
+        std::string arg = trim_copy(line.substr(10));
+        if (arg.empty()) {
+            std::cout << "Current principal: " << *local_principal
+                      << " (authorization " << (*local_enforce_authorization ? "enabled" : "disabled") << ")\n";
+            return true;
+        }
+
+        if (arg == "off" || arg == "local_admin") {
+            *local_principal = "local_admin";
+            *local_enforce_authorization = false;
+            std::cout << "Switched principal to local_admin (authorization disabled).\n";
+            return true;
+        }
+
+        const auto* user = catalog.get_user(arg);
+        if (!user) {
+            std::cout << "User not found: " << arg << "\n";
+            return true;
+        }
+        *local_principal = user->username;
+        *local_enforce_authorization = true;
+        std::cout << "Switched principal to " << user->username << " (authorization enabled).\n";
         return true;
     }
     if (starts_with(line, ".functions")) {
@@ -2094,7 +2186,9 @@ static bool process_input_line(const std::string& raw_line,
                                storage::LockManager& lock_manager,
                                storage::WalManager& wal_manager,
                                std::string& buffer,
-                               bool is_interactive) {
+                               bool is_interactive,
+                               std::string& local_principal,
+                               bool& local_enforce_authorization) {
     std::string line = trim_copy(raw_line);
     if (line.empty()) {
         if (is_interactive) std::cout << "sqp> ";
@@ -2103,7 +2197,8 @@ static bool process_input_line(const std::string& raw_line,
 
     if (line[0] == '.') {
         bool keep_running = handle_dot_command(line, catalog, txn_manager, lock_manager, wal_manager,
-                                               "local_admin", false, false);
+                                               local_principal, local_enforce_authorization, false,
+                                               &local_principal, &local_enforce_authorization);
         if (keep_running && is_interactive) std::cout << "sqp> ";
         return keep_running;
     }
@@ -2115,7 +2210,8 @@ static bool process_input_line(const std::string& raw_line,
         return true;
     }
 
-    bool success = execute_sql(buffer, catalog, txn_manager, lock_manager, wal_manager);
+    bool success = execute_sql(buffer, catalog, txn_manager, lock_manager, wal_manager,
+                               local_principal, local_enforce_authorization);
     buffer.clear();
 
     // In script mode, stop on error; in interactive mode, continue
@@ -2138,8 +2234,13 @@ static bool run_script_file(const std::string& path,
 
     std::string line;
     std::string buffer;
+    std::string local_principal = "local_admin";
+    bool local_enforce_authorization = false;
     while (std::getline(script, line)) {
-        if (!process_input_line(line, catalog, txn_manager, lock_manager, wal_manager, buffer, false)) return false;
+        if (!process_input_line(line, catalog, txn_manager, lock_manager, wal_manager, buffer, false,
+                                local_principal, local_enforce_authorization)) {
+            return false;
+        }
     }
 
     if (!trim_copy(buffer).empty()) {
@@ -2235,7 +2336,8 @@ static void handle_server_client(SocketHandle client_sock,
                                  storage::LockManager& lock_manager,
                                  storage::WalManager& wal_manager,
                                  std::mutex& engine_mutex,
-                                 ServerAuthMode auth_mode) {
+                                 ServerAuthMode auth_mode,
+                                 ServerAuthPolicy auth_policy) {
     std::string hello = "HELLO VDB\nSESSION " + session_id + "\n";
     if (!send_all(client_sock, hello)) {
         close_socket_handle(client_sock);
@@ -2247,11 +2349,8 @@ static void handle_server_client(SocketHandle client_sock,
     std::string auth_user = "anonymous";
     std::string auth_nonce;
     auto auth_nonce_issued_at = std::chrono::steady_clock::time_point{};
-    constexpr std::chrono::seconds kAuthNonceTtl{90};
     int auth_failed_attempts = 0;
     auto auth_lockout_until = std::chrono::steady_clock::time_point{};
-    constexpr int kAuthMaxFailedAttempts = 3;
-    constexpr std::chrono::seconds kAuthLockoutDuration{60};
     bool authenticated = (auth_mode == ServerAuthMode::NONE);
     char tmp[4096];
 
@@ -2289,8 +2388,8 @@ static void handle_server_client(SocketHandle client_sock,
                     auth_nonce = to_hex(random_bytes(16));
                     auth_nonce_issued_at = std::chrono::steady_clock::now();
                     auth_failed_attempts++;
-                    if (auth_failed_attempts >= kAuthMaxFailedAttempts) {
-                        auth_lockout_until = std::chrono::steady_clock::now() + kAuthLockoutDuration;
+                    if (auth_failed_attempts >= auth_policy.max_failed_attempts) {
+                        auth_lockout_until = std::chrono::steady_clock::now() + auth_policy.lockout_duration;
                         auth_failed_attempts = 0;
                     }
                     if (!send_all(client_sock, "AUTH_ERROR auth_failed\n")) goto client_done;
@@ -2316,7 +2415,7 @@ static void handle_server_client(SocketHandle client_sock,
                     if (!send_all(client_sock, "AUTH_ERROR auth_nonce_expired\n")) goto client_done;
                     continue;
                 }
-                if (std::chrono::steady_clock::now() - auth_nonce_issued_at > kAuthNonceTtl) {
+                if (std::chrono::steady_clock::now() - auth_nonce_issued_at > auth_policy.nonce_ttl) {
                     auth_nonce.clear();
                     if (!send_all(client_sock, "AUTH_ERROR auth_nonce_expired\n")) goto client_done;
                     continue;
@@ -2326,8 +2425,8 @@ static void handle_server_client(SocketHandle client_sock,
                 if (!user || user->is_locked) {
                     auth_nonce.clear();
                     auth_failed_attempts++;
-                    if (auth_failed_attempts >= kAuthMaxFailedAttempts) {
-                        auth_lockout_until = std::chrono::steady_clock::now() + kAuthLockoutDuration;
+                    if (auth_failed_attempts >= auth_policy.max_failed_attempts) {
+                        auth_lockout_until = std::chrono::steady_clock::now() + auth_policy.lockout_duration;
                         auth_failed_attempts = 0;
                     }
                     if (!send_all(client_sock, "AUTH_ERROR auth_failed\n")) goto client_done;
@@ -2337,8 +2436,8 @@ static void handle_server_client(SocketHandle client_sock,
                 auth_nonce.clear();
                 if (proof != expected) {
                     auth_failed_attempts++;
-                    if (auth_failed_attempts >= kAuthMaxFailedAttempts) {
-                        auth_lockout_until = std::chrono::steady_clock::now() + kAuthLockoutDuration;
+                    if (auth_failed_attempts >= auth_policy.max_failed_attempts) {
+                        auth_lockout_until = std::chrono::steady_clock::now() + auth_policy.lockout_duration;
                         auth_failed_attempts = 0;
                     }
                     if (!send_all(client_sock, "AUTH_ERROR auth_failed\n")) goto client_done;
@@ -2410,7 +2509,8 @@ static int run_server(const std::string& host,
                       storage::TransactionManager& txn_manager,
                       storage::LockManager& lock_manager,
                       storage::WalManager& wal_manager,
-                      ServerAuthMode auth_mode) {
+                      ServerAuthMode auth_mode,
+                      ServerAuthPolicy auth_policy) {
     if (!init_socket_layer()) {
         std::cout << "Error: failed to initialize socket layer.\n";
         return 1;
@@ -2480,7 +2580,8 @@ static int run_server(const std::string& host,
             std::ref(lock_manager),
             std::ref(wal_manager),
             std::ref(engine_mutex),
-            auth_mode
+            auth_mode,
+            auth_policy
         ).detach();
     }
 
@@ -2519,12 +2620,13 @@ int main(int argc, char* argv[]) {
             std::string host = "127.0.0.1";
             uint16_t port = 54330;
             ServerAuthMode auth_mode = ServerAuthMode::NONE;
+            ServerAuthPolicy auth_policy;
 
             for (int i = 2; i < argc; i++) {
                 std::string opt = argv[i];
                 if (opt == "--host") {
                     if (i + 1 >= argc) {
-                        std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>]\n";
+                        std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>] [--auth-mode none|password] [--auth-nonce-ttl-sec <sec>] [--auth-lockout-sec <sec>]\n";
                         return 1;
                     }
                     host = argv[++i];
@@ -2532,7 +2634,7 @@ int main(int argc, char* argv[]) {
                 }
                 if (opt == "--port") {
                     if (i + 1 >= argc) {
-                        std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>]\n";
+                        std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>] [--auth-mode none|password] [--auth-nonce-ttl-sec <sec>] [--auth-lockout-sec <sec>]\n";
                         return 1;
                     }
                     int parsed_port = std::stoi(argv[++i]);
@@ -2545,7 +2647,7 @@ int main(int argc, char* argv[]) {
                 }
                 if (opt == "--auth-mode") {
                     if (i + 1 >= argc) {
-                        std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>] [--auth-mode none|password]\n";
+                        std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>] [--auth-mode none|password] [--auth-nonce-ttl-sec <sec>] [--auth-lockout-sec <sec>]\n";
                         return 1;
                     }
                     std::string mode = trim_copy(argv[++i]);
@@ -2559,9 +2661,35 @@ int main(int argc, char* argv[]) {
                     }
                     continue;
                 }
+                if (opt == "--auth-nonce-ttl-sec") {
+                    if (i + 1 >= argc) {
+                        std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>] [--auth-mode none|password] [--auth-nonce-ttl-sec <sec>] [--auth-lockout-sec <sec>]\n";
+                        return 1;
+                    }
+                    int parsed = std::stoi(argv[++i]);
+                    if (parsed <= 0) {
+                        std::cout << "Error: --auth-nonce-ttl-sec must be > 0\n";
+                        return 1;
+                    }
+                    auth_policy.nonce_ttl = std::chrono::seconds(parsed);
+                    continue;
+                }
+                if (opt == "--auth-lockout-sec") {
+                    if (i + 1 >= argc) {
+                        std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>] [--auth-mode none|password] [--auth-nonce-ttl-sec <sec>] [--auth-lockout-sec <sec>]\n";
+                        return 1;
+                    }
+                    int parsed = std::stoi(argv[++i]);
+                    if (parsed <= 0) {
+                        std::cout << "Error: --auth-lockout-sec must be > 0\n";
+                        return 1;
+                    }
+                    auth_policy.lockout_duration = std::chrono::seconds(parsed);
+                    continue;
+                }
 
                 std::cout << "Unknown server option: " << opt << "\n";
-                std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>] [--auth-mode none|password]\n";
+                std::cout << "Usage: vdb --server [--host <ipv4>] [--port <port>] [--auth-mode none|password] [--auth-nonce-ttl-sec <sec>] [--auth-lockout-sec <sec>]\n";
                 return 1;
             }
 
@@ -2571,7 +2699,7 @@ int main(int argc, char* argv[]) {
                 std::cout << "Bootstrapped superuser 'admin' with default password 'admin' (change immediately).\n";
             }
 
-            return run_server(host, port, catalog, txn_manager, lock_manager, wal_manager, auth_mode);
+            return run_server(host, port, catalog, txn_manager, lock_manager, wal_manager, auth_mode, auth_policy);
         }
         if (arg == "--generate") {
             size_t n = argc > 2 ? std::stoul(argv[2]) : 10000;
@@ -2597,10 +2725,15 @@ int main(int argc, char* argv[]) {
 
     std::string line;
     std::string buffer;
+    std::string local_principal = "local_admin";
+    bool local_enforce_authorization = false;
     std::cout << "sqp> ";
 
     while (std::getline(std::cin, line)) {
-        if (!process_input_line(line, catalog, txn_manager, lock_manager, wal_manager, buffer, true)) break;
+        if (!process_input_line(line, catalog, txn_manager, lock_manager, wal_manager, buffer, true,
+                                local_principal, local_enforce_authorization)) {
+            break;
+        }
     }
 
     std::cout << "\nBye!\n";

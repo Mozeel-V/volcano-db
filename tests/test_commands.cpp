@@ -193,6 +193,49 @@ TEST_CASE("E2E: .functions invalid filter", "[e2e][commands][function]") {
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Usage: .functions [builtins|udf]"));
 }
 
+TEST_CASE("E2E: local principal-aware dot command filtering", "[e2e][commands][auth]") {
+    std::string output = run_interactive(
+        "CREATE USER alice IDENTIFIED BY 'alicepw';\n"
+        "CREATE TABLE t_visible (id INT);\n"
+        "CREATE TABLE t_hidden (id INT);\n"
+        "CREATE FUNCTION fn_hidden(x INT) RETURNS INT AS 'x + 1';\n"
+        "CREATE TRIGGER trg_hidden BEFORE INSERT ON t_hidden BEGIN INSERT INTO t_hidden VALUES (99); END;\n"
+        "GRANT SELECT ON TABLE t_visible TO alice;\n"
+        ".principal alice\n"
+        ".tables\n"
+        ".schema t_hidden\n"
+        ".schema t_visible\n"
+        ".functions udf\n"
+        ".triggers\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Switched principal to alice (authorization enabled)."));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("t_visible"));
+    CHECK(output.find("t_hidden (") == std::string::npos);
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Permission denied: missing SELECT on TABLE t_hidden"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table: t_visible"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("User-defined SQL functions (authorized) (0):"));
+    CHECK(output.find("| t_hidden") == std::string::npos);
+}
+
+TEST_CASE("E2E: .principal toggles local auth context", "[e2e][commands][auth]") {
+    std::string output = run_interactive(
+        "CREATE USER bob IDENTIFIED BY 'bobpw';\n"
+        "CREATE TABLE admin_only (id INT);\n"
+        ".principal bob\n"
+        "TRUNCATE admin_only;\n"
+        ".principal off\n"
+        "TRUNCATE admin_only;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Switched principal to bob (authorization enabled)."));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("permission_denied"));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Switched principal to local_admin (authorization disabled)."));
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 'admin_only' truncated"));
+}
+
 
 TEST_CASE("E2E: .save with no argument", "[e2e][commands]") {
     std::string output = run_interactive(
