@@ -284,6 +284,16 @@ struct GrantRevokeStmt {
     std::string grantee;
 };
 
+struct ProcedureBlockStmt {
+    std::vector<StmtPtr> statements;
+};
+
+struct WhileStmt {
+    std::string label;
+    ExprPtr condition;
+    std::vector<StmtPtr> body;
+};
+
 enum class StmtType {
     ST_SELECT,
     ST_BEGIN_TXN,
@@ -317,6 +327,10 @@ enum class StmtType {
     ST_DROP_USER,
     ST_GRANT,
     ST_REVOKE,
+    ST_PROC_BLOCK,
+    ST_WHILE,
+    ST_LEAVE,
+    ST_ITERATE,
 };
 
 struct Statement {
@@ -336,6 +350,9 @@ struct Statement {
     std::shared_ptr<CreateUserStmt> create_user;
     std::shared_ptr<AlterUserStmt> alter_user;
     std::shared_ptr<GrantRevokeStmt> grant_revoke;
+    std::shared_ptr<ProcedureBlockStmt> proc_block;
+    std::shared_ptr<WhileStmt> while_stmt;
+    std::string loop_label;
     std::string drop_name;  // name of table/index/view to drop, or table to truncate, or trigger to drop
     bool explain_analyze = false;
     bool explain_dot = false;

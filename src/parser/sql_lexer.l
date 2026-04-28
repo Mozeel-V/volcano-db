@@ -134,6 +134,10 @@ extern int yylineno;
 "CASCADE"           { return CASCADE; }
 "RESTRICT"          { return RESTRICT; }
 "BEGIN"             { return BEGIN_KW; }
+"WHILE"             { return WHILE; }
+"DO"                { return DO; }
+"LEAVE"             { return LEAVE; }
+"ITERATE"           { return ITERATE; }
 
 "<="                { return LEQ; }
 ">="                { return GEQ; }
@@ -152,6 +156,7 @@ extern int yylineno;
 ","                 { return ','; }
 ";"                 { return ';'; }
 "."                 { return '.'; }
+":"                 { return ':'; }
 
 [0-9]+\.[0-9]+      {
     yylval.float_val = atof(yytext);

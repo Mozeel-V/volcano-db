@@ -54,18 +54,21 @@ jobs:
         shell: powershell
         run: |
           $env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:PATH"
+          Remove-Item -Force -ErrorAction SilentlyContinue .\sqp.wal, .\sqp.checkpoint
           npm --prefix clients/node test
 
       - name: Run Python integration tests
         shell: powershell
         run: |
           $env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:PATH"
+          Remove-Item -Force -ErrorAction SilentlyContinue .\sqp.wal, .\sqp.checkpoint
           conda run -n base python -m unittest -v clients/python/test_integration.py
 
       - name: Run Python and Node smoke tests against live server
         shell: powershell
         run: |
           $env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:PATH"
+          Remove-Item -Force -ErrorAction SilentlyContinue .\sqp.wal, .\sqp.checkpoint
           $server = Start-Process -FilePath ".\build\vdb.exe" -ArgumentList "--server","--host","127.0.0.1","--port","54330" -PassThru -WindowStyle Hidden
           try {
             Start-Sleep -Seconds 2

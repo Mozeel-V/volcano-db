@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
+const os = require("node:os");
 const { spawn } = require("node:child_process");
 const net = require("node:net");
 const { connect } = require("./vdb_client");
@@ -19,6 +20,19 @@ function serverBinaryPath() {
   return path.resolve(__dirname, "..", "..", "build", name);
 }
 
+function createServerWorkDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "vdb-node-it-"));
+}
+
+function cleanupServerWorkDir(dirPath) {
+  if (!dirPath) return;
+  try {
+    fs.rmSync(dirPath, { recursive: true, force: true });
+  } catch (_) {
+    // Best-effort cleanup for CI temp dirs.
+  }
+}
+
 async function startServer(host, port) {
   return startServerWithOptions({ host, port });
 }
@@ -28,14 +42,16 @@ async function startServerWithOptions({ host, port, authMode = null }) {
   if (!fs.existsSync(exe)) {
     throw new Error(`Server binary not found at: ${exe}`);
   }
+  const serverCwd = createServerWorkDir();
   const args = ["--server", "--host", host, "--port", String(port)];
   if (authMode) {
     args.push("--auth-mode", authMode);
   }
   const child = spawn(exe, args, {
-    cwd: path.resolve(__dirname, "..", ".."),
+    cwd: serverCwd,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  child.vdbServerCwd = serverCwd;
 
   let stderr = "";
   let stdout = "";
@@ -50,9 +66,10 @@ async function startServerWithOptions({ host, port, authMode = null }) {
 
   for (let i = 0; i < 40; i += 1) {
     if (child.exitCode !== null) {
+      cleanupServerWorkDir(serverCwd);
       throw new Error(
         `Server exited early (code=${child.exitCode})\n` +
-        `exe=${exe}\nargs=${args.join(" ")}\n` +
+        `exe=${exe}\nargs=${args.join(" ")}\ncwd=${serverCwd}\n` +
         `stdout=${stdout}\nstderr=${stderr}`,
       );
     }
@@ -71,15 +88,22 @@ async function startServerWithOptions({ host, port, authMode = null }) {
   }
 
   child.kill();
+  cleanupServerWorkDir(serverCwd);
   throw new Error("Timed out waiting for server start");
 }
 
 async function stopServer(child) {
-  if (!child || child.exitCode !== null) return;
-  child.kill();
-  await delay(200);
-  if (child.exitCode === null) {
-    child.kill("SIGKILL");
+  if (!child) return;
+  try {
+    if (child.exitCode === null) {
+      child.kill();
+      await delay(200);
+      if (child.exitCode === null) {
+        child.kill("SIGKILL");
+      }
+    }
+  } finally {
+    cleanupServerWorkDir(child.vdbServerCwd);
   }
 }
 

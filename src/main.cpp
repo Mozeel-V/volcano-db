@@ -646,6 +646,10 @@ static const char* statement_type_name(ast::StmtType type) {
         case ast::StmtType::ST_DROP_USER: return "DROP_USER";
         case ast::StmtType::ST_GRANT: return "GRANT";
         case ast::StmtType::ST_REVOKE: return "REVOKE";
+        case ast::StmtType::ST_PROC_BLOCK: return "PROC_BLOCK";
+        case ast::StmtType::ST_WHILE: return "WHILE";
+        case ast::StmtType::ST_LEAVE: return "LEAVE";
+        case ast::StmtType::ST_ITERATE: return "ITERATE";
         default: return "UNKNOWN";
     }
 }
@@ -713,6 +717,10 @@ static bool statement_mutates_catalog(ast::StmtType type) {
         case ast::StmtType::ST_DROP_USER:
         case ast::StmtType::ST_GRANT:
         case ast::StmtType::ST_REVOKE:
+        case ast::StmtType::ST_PROC_BLOCK:
+        case ast::StmtType::ST_WHILE:
+        case ast::StmtType::ST_LEAVE:
+        case ast::StmtType::ST_ITERATE:
             return true;
         default:
             return false;
@@ -755,6 +763,10 @@ static bool statement_requires_authorization(ast::StmtType type) {
         case ast::StmtType::ST_MERGE:
         case ast::StmtType::ST_CREATE_TRIGGER:
         case ast::StmtType::ST_DROP_TRIGGER:
+        case ast::StmtType::ST_PROC_BLOCK:
+        case ast::StmtType::ST_WHILE:
+        case ast::StmtType::ST_LEAVE:
+        case ast::StmtType::ST_ITERATE:
             return true;
 
         default:
@@ -892,12 +904,142 @@ static bool check_statement_authorization(const ast::Statement& stmt,
         case ast::StmtType::ST_DROP_USER:
         case ast::StmtType::ST_GRANT:
         case ast::StmtType::ST_REVOKE:
+        case ast::StmtType::ST_PROC_BLOCK:
+        case ast::StmtType::ST_WHILE:
+        case ast::StmtType::ST_LEAVE:
+        case ast::StmtType::ST_ITERATE:
             return true;
         default:
             auth_error = "permission_denied: no authorization rule for statement " + std::string(statement_type_name(stmt.type));
             return false;
     }
 }
+
+class ProceduralControlFlow : public std::exception {
+public:
+    enum class Kind {
+        LEAVE,
+        ITERATE,
+    };
+
+    ProceduralControlFlow(Kind kind, std::string label)
+        : kind_(kind), label_(std::move(label)) {}
+
+    Kind kind() const noexcept { return kind_; }
+    const std::string& label() const noexcept { return label_; }
+
+    const char* what() const noexcept override {
+        return kind_ == Kind::LEAVE ? "LEAVE" : "ITERATE";
+    }
+
+private:
+    Kind kind_;
+    std::string label_;
+};
+
+static constexpr int64_t kMaxProceduralLoopIterations = 100000;
+
+static storage::Value eval_procedural_expr(const ast::ExprPtr& e, std::string& error) {
+    if (!e) return std::monostate{};
+
+    switch (e->type) {
+        case ast::ExprType::LITERAL_INT:
+            return e->int_val;
+        case ast::ExprType::LITERAL_FLOAT:
+            return e->float_val;
+        case ast::ExprType::LITERAL_STRING:
+            return e->str_val;
+        case ast::ExprType::LITERAL_NULL:
+            return std::monostate{};
+        case ast::ExprType::BINARY_OP: {
+            auto lv = eval_procedural_expr(e->left, error);
+            if (!error.empty()) return std::monostate{};
+            auto rv = eval_procedural_expr(e->right, error);
+            if (!error.empty()) return std::monostate{};
+
+            switch (e->bin_op) {
+                case ast::BinOp::OP_EQ: return static_cast<int64_t>(storage::value_equal(lv, rv) ? 1 : 0);
+                case ast::BinOp::OP_NEQ: return static_cast<int64_t>(storage::value_equal(lv, rv) ? 0 : 1);
+                case ast::BinOp::OP_LT: return static_cast<int64_t>(storage::value_less(lv, rv) ? 1 : 0);
+                case ast::BinOp::OP_GT: return static_cast<int64_t>(storage::value_less(rv, lv) ? 1 : 0);
+                case ast::BinOp::OP_LTE: return static_cast<int64_t>((storage::value_less(lv, rv) || storage::value_equal(lv, rv)) ? 1 : 0);
+                case ast::BinOp::OP_GTE: return static_cast<int64_t>((storage::value_less(rv, lv) || storage::value_equal(lv, rv)) ? 1 : 0);
+                case ast::BinOp::OP_AND: return static_cast<int64_t>((storage::value_to_int(lv) && storage::value_to_int(rv)) ? 1 : 0);
+                case ast::BinOp::OP_OR: return static_cast<int64_t>((storage::value_to_int(lv) || storage::value_to_int(rv)) ? 1 : 0);
+                case ast::BinOp::OP_ADD: return storage::value_add(lv, rv);
+                case ast::BinOp::OP_SUB: return storage::value_sub(lv, rv);
+                case ast::BinOp::OP_MUL: return storage::value_mul(lv, rv);
+                case ast::BinOp::OP_DIV: return storage::value_div(lv, rv);
+                case ast::BinOp::OP_MOD: {
+                    int64_t r = storage::value_to_int(rv);
+                    if (r == 0) {
+                        error = "Division by zero in procedural expression";
+                        return std::monostate{};
+                    }
+                    return storage::value_to_int(lv) % r;
+                }
+                case ast::BinOp::OP_LIKE: return static_cast<int64_t>(storage::value_like(lv, rv) ? 1 : 0);
+                default:
+                    error = "Unsupported binary operator in procedural expression";
+                    return std::monostate{};
+            }
+        }
+        case ast::ExprType::UNARY_OP: {
+            auto ov = eval_procedural_expr(e->operand, error);
+            if (!error.empty()) return std::monostate{};
+
+            switch (e->unary_op) {
+                case ast::UnaryOp::OP_NOT:
+                    return static_cast<int64_t>(storage::value_to_int(ov) ? 0 : 1);
+                case ast::UnaryOp::OP_IS_NULL:
+                    return static_cast<int64_t>(storage::value_is_null(ov) ? 1 : 0);
+                case ast::UnaryOp::OP_IS_NOT_NULL:
+                    return static_cast<int64_t>(storage::value_is_null(ov) ? 0 : 1);
+                case ast::UnaryOp::OP_NEG:
+                    if (storage::value_is_null(ov)) return std::monostate{};
+                    if (std::holds_alternative<int64_t>(ov)) return -std::get<int64_t>(ov);
+                    return -storage::value_to_double(ov);
+            }
+            break;
+        }
+        case ast::ExprType::FUNC_CALL: {
+            std::vector<storage::Value> args;
+            args.reserve(e->args.size());
+            for (const auto& arg : e->args) {
+                args.push_back(eval_procedural_expr(arg, error));
+                if (!error.empty()) return std::monostate{};
+            }
+
+            storage::Value out;
+            if (executor::try_eval_builtin_function(e->func_name, args, out)) {
+                return out;
+            }
+
+            error = "Unsupported function in procedural expression: " + e->func_name;
+            return std::monostate{};
+        }
+        default:
+            error = "Unsupported expression in procedural loop condition";
+            return std::monostate{};
+    }
+
+    error = "Unsupported expression in procedural loop condition";
+    return std::monostate{};
+}
+
+static bool eval_procedural_bool(const ast::ExprPtr& e, std::string& error) {
+    auto v = eval_procedural_expr(e, error);
+    if (!error.empty()) return false;
+    return storage::value_to_int(v) != 0;
+}
+
+static bool execute_parsed_statement(const ast::Statement& parsed_stmt,
+                                     storage::Catalog& catalog,
+                                     storage::TransactionManager& txn_manager,
+                                     storage::LockManager& lock_manager,
+                                     storage::WalManager& wal_manager,
+                                     const std::string& current_user = "local_admin",
+                                     bool enforce_authorization = false);
 
 static bool execute_sql(const std::string& sql,
                         storage::Catalog& catalog,
@@ -911,6 +1053,23 @@ static bool execute_sql(const std::string& sql,
         std::cout << "Error: failed to parse query\n";
         return false;
     }
+
+    try {
+        return execute_parsed_statement(*stmt, catalog, txn_manager, lock_manager, wal_manager, current_user, enforce_authorization);
+    } catch (const ProceduralControlFlow& control) {
+        std::cout << "Error: " << control.what() << " used outside loop\n";
+        return false;
+    }
+}
+
+static bool execute_parsed_statement(const ast::Statement& parsed_stmt,
+                                     storage::Catalog& catalog,
+                                     storage::TransactionManager& txn_manager,
+                                     storage::LockManager& lock_manager,
+                                     storage::WalManager& wal_manager,
+                                     const std::string& current_user,
+                                     bool enforce_authorization) {
+    const ast::Statement* stmt = &parsed_stmt;
 
     const bool txn_active_for_locks = txn_manager.in_transaction();
     const uint64_t lock_txn_id = txn_active_for_locks ? txn_manager.current_txn_id() : 0;
@@ -937,7 +1096,7 @@ static bool execute_sql(const std::string& sql,
     if (txn_manager.in_transaction() && !statement_allowed_in_transaction(stmt->type)) {
         std::cout << "Error: statement '" << statement_type_name(stmt->type)
                   << "' is not allowed in active transaction"
-                  << " (allowed: SELECT/EXPLAIN/BENCHMARK/INSERT/UPDATE/DELETE/MERGE/COMMIT/ROLLBACK).\n";
+                  << " (allowed: SELECT/EXPLAIN/BENCHMARK/INSERT/UPDATE/DELETE/MERGE/WHILE/BEGIN...END/LEAVE/ITERATE/COMMIT/ROLLBACK).\n";
         return false;
     }
 
@@ -974,6 +1133,70 @@ static bool execute_sql(const std::string& sql,
                 std::cout << "Transaction rolled back.\n";
                 break;
             }
+            case ast::StmtType::ST_PROC_BLOCK: {
+                if (!stmt->proc_block) {
+                    throw std::runtime_error("Malformed procedural block");
+                }
+                for (const auto& sub_stmt : stmt->proc_block->statements) {
+                    if (!sub_stmt) continue;
+                    if (!execute_parsed_statement(*sub_stmt, catalog, txn_manager, lock_manager,
+                                                  wal_manager, current_user, enforce_authorization)) {
+                        return false;
+                    }
+                }
+                break;
+            }
+            case ast::StmtType::ST_WHILE: {
+                if (!stmt->while_stmt) {
+                    throw std::runtime_error("Malformed WHILE statement");
+                }
+
+                int64_t iterations = 0;
+                while (true) {
+                    std::string eval_error;
+                    bool cond = eval_procedural_bool(stmt->while_stmt->condition, eval_error);
+                    if (!eval_error.empty()) {
+                        throw std::runtime_error(eval_error);
+                    }
+                    if (!cond) {
+                        break;
+                    }
+                    if (++iterations > kMaxProceduralLoopIterations) {
+                        throw std::runtime_error("WHILE loop exceeded max iterations (" +
+                                                 std::to_string(kMaxProceduralLoopIterations) + ")");
+                    }
+
+                    try {
+                        for (const auto& sub_stmt : stmt->while_stmt->body) {
+                            if (!sub_stmt) continue;
+                            if (!execute_parsed_statement(*sub_stmt, catalog, txn_manager, lock_manager,
+                                                          wal_manager, current_user, enforce_authorization)) {
+                                return false;
+                            }
+                        }
+                    } catch (const ProceduralControlFlow& control) {
+                        const bool label_matches = control.label().empty() ||
+                            storage::normalize_identifier_key(control.label()) ==
+                            storage::normalize_identifier_key(stmt->while_stmt->label);
+
+                        if (!label_matches) {
+                            throw;
+                        }
+
+                        if (control.kind() == ProceduralControlFlow::Kind::LEAVE) {
+                            break;
+                        }
+                        if (control.kind() == ProceduralControlFlow::Kind::ITERATE) {
+                            continue;
+                        }
+                    }
+                }
+                break;
+            }
+            case ast::StmtType::ST_LEAVE:
+                throw ProceduralControlFlow(ProceduralControlFlow::Kind::LEAVE, stmt->loop_label);
+            case ast::StmtType::ST_ITERATE:
+                throw ProceduralControlFlow(ProceduralControlFlow::Kind::ITERATE, stmt->loop_label);
             case ast::StmtType::ST_CREATE_TABLE: {
                 auto& ct = *stmt->create_table;
                 auto tbl = std::make_shared<storage::Table>();
@@ -1880,6 +2103,9 @@ static bool execute_sql(const std::string& sql,
         if (!txn_manager.in_transaction() && statement_mutates_catalog(stmt->type)) {
             checkpoint_after_statement = true;
         }
+    } catch (const ProceduralControlFlow&) {
+        release_statement_read_locks();
+        throw;
     } catch (const std::exception& e) {
         release_statement_read_locks();
         std::cout << "Error: " << e.what() << "\n";

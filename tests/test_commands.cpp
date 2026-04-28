@@ -236,6 +236,37 @@ TEST_CASE("E2E: .principal toggles local auth context", "[e2e][commands][auth]")
     CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Table 'admin_only' truncated"));
 }
 
+TEST_CASE("E2E: LEAVE outside loop is rejected", "[e2e][procedural]") {
+    std::string output = run_interactive(
+        "LEAVE;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("Error: LEAVE used outside loop"));
+}
+
+TEST_CASE("E2E: WHILE loop honors LEAVE", "[e2e][procedural]") {
+    std::string output = run_interactive(
+        "CREATE TABLE loop_check (id INT);\n"
+        "main_loop: WHILE 1 DO LEAVE main_loop; END WHILE;\n"
+        "INSERT INTO loop_check VALUES (1);\n"
+        "SELECT * FROM loop_check;\n"
+        ".quit\n"
+    );
+
+    CHECK(output.find("Error:") == std::string::npos);
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("(1 rows)"));
+}
+
+TEST_CASE("E2E: WHILE loop iteration cap", "[e2e][procedural]") {
+    std::string output = run_interactive(
+        "WHILE 1 DO ITERATE; END WHILE;\n"
+        ".quit\n"
+    );
+
+    CHECK_THAT(output, Catch::Matchers::ContainsSubstring("WHILE loop exceeded max iterations"));
+}
+
 
 TEST_CASE("E2E: .save with no argument", "[e2e][commands]") {
     std::string output = run_interactive(

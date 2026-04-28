@@ -365,6 +365,18 @@ TEST_CASE("Parser: ROLLBACK statement", "[parser][transaction]") {
     REQUIRE(stmt->type == ast::StmtType::ST_ROLLBACK_TXN);
 }
 
+TEST_CASE("Parser: labeled WHILE with LEAVE", "[parser][procedural]") {
+    auto stmt = ast::parse_sql("main_loop: WHILE 1 DO LEAVE main_loop; END WHILE;");
+    REQUIRE(stmt != nullptr);
+    REQUIRE(stmt->type == ast::StmtType::ST_WHILE);
+    REQUIRE(stmt->while_stmt != nullptr);
+    CHECK(stmt->while_stmt->label == "main_loop");
+    REQUIRE(stmt->while_stmt->body.size() == 1);
+    REQUIRE(stmt->while_stmt->body[0] != nullptr);
+    CHECK(stmt->while_stmt->body[0]->type == ast::StmtType::ST_LEAVE);
+    CHECK(stmt->while_stmt->body[0]->loop_label == "main_loop");
+}
+
 TEST_CASE("WAL: recovery replays committed row changes after checkpoint", "[wal][durability][acid][acid-d]") {
     const std::string wal_path = "ut_wal_replay.wal";
     const std::string checkpoint_path = "ut_wal_replay.checkpoint";

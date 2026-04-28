@@ -219,10 +219,15 @@ SELECT dept, COUNT(*) FROM employees GROUP BY dept;
 -- Run the built-in benchmark suite
 .benchmark
 
--- Transactional writes (MVP)
+-- Transactional writes
 BEGIN;
 INSERT INTO employees VALUES (10001, 'Temp User', 'Engineering', 120000, 30);
 ROLLBACK;
+
+-- Procedural loops
+WHILE (SELECT COUNT(*) FROM employees) < 10000 DO
+  INSERT INTO employees VALUES (10001, 'Temp User', 'Engineering', 120000, 30);
+END WHILE;
 
 -- Save all current tables to a formatted text dump
 .save volcanodb_dump.txt
@@ -371,6 +376,13 @@ BEGIN TRANSACTION;
 COMMIT;
 ROLLBACK;
 
+-- Procedural Loops
+[label:] WHILE <condition> DO
+  <statement_list>
+END WHILE;
+LEAVE [label];
+ITERATE [label];
+
 -- Analysis
 EXPLAIN <query>;
 EXPLAIN ANALYZE <query>;
@@ -381,16 +393,16 @@ ABS(x), ROUND(x), CEIL(x), FLOOR(x), COALESCE(a, b), NULLIF(a, b),
 custom_udf(col1, col2);
 ```
 
-### Functions, Pattern Matching, and Window Analytics
+### Functions, Analytics, and Procedural Control Flow
 
 - Scalar built-ins are supported in expression contexts (`SELECT`, `WHERE`, `ORDER BY`, `GROUP BY`): `LOWER`, `UPPER`, `LENGTH`, `TRIM`, `SUBSTR`, `ABS`, `ROUND`, `CEIL`/`CEILING`, `FLOOR`, `COALESCE`, `NULLIF`.
 - SQL UDF lifecycle is supported via `CREATE FUNCTION ... RETURNS ... AS ...` and `DROP FUNCTION`.
 - UDF resolution is name-based and currently expression-body focused (no statement-body UDFs).
-- `LIKE` supports SQL wildcards `%` and `_`, plus escaped literals (for example `LIKE 'a\_b'` and `LIKE 'a\%b'`).
-- Window functions are supported in projection via `ROW_NUMBER`, `RANK`, and `DENSE_RANK` with `OVER (PARTITION BY ... ORDER BY ...)`.
-- Current window limitation: mixing window expressions with `GROUP BY`/aggregate queries in the same select block is rejected.
+- `LIKE` supports SQL wildcards `%` and `_`, plus escaped literals.
+- Window functions are supported in projection via `ROW_NUMBER`, `RANK`, and `DENSE_RANK` with `OVER (PARTITION BY ... ORDER BY ...)`. Limitation: mixing window expressions with `GROUP BY`/aggregate queries in the same select block is rejected.
+- Procedural loops are supported via labeled `WHILE <condition> DO ... END WHILE` blocks. Loop execution can be managed using `LEAVE [label]` to exit and `ITERATE [label]` to skip to the next iteration. Loops are runtime-capped at 100,000 iterations to prevent runaway execution.
 
-### Transaction notes (current behavior)
+### Transaction notes
 
 - In explicit transactions, VolcanoDB currently allows: `SELECT`, `EXPLAIN`, `BENCHMARK`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `COMMIT`, `ROLLBACK`.
 - Non-transactional mutating statements (for example DDL and `TRUNCATE`) are rejected inside active transactions.
@@ -459,9 +471,9 @@ Tag snapshot from `./vdb_tests --list-tags` (counts are per-tag and overlap acro
 
 | Area | Tag(s) | Cases |
 |------|--------|------:|
-| **Total suite** | `all` | **466** |
-| Parsing and grammar | `[parser]` | 112 |
-| End-to-end SQL | `[e2e]` | 251 |
+| **Total suite** | `all` | **470** |
+| Parsing and grammar | `[parser]` | 113 |
+| End-to-end SQL | `[e2e]` | 256 |
 | CLI and scripts | `[commands]` | 31 |
 | Storage core | `[storage]` | 38 |
 | Indexing | `[index]` | 21 |

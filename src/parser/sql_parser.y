@@ -28,6 +28,12 @@ static RawExprList make_elist() { RawExprList l = {nullptr,0,0}; return l; }
 static RawTRefList make_tlist() { RawTRefList l = {nullptr,0,0}; return l; }
 static RawOrderList make_olist(){ RawOrderList l = {0,0,nullptr,nullptr}; return l; }
 static RawColDefList make_cdlist(){ RawColDefList l = {0,0,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr}; return l; }
+static RawStmtList make_stlist() { RawStmtList l = {nullptr,0,0}; return l; }
+
+static void stlist_push(RawStmtList& l, Statement* s) {
+  if (l.count >= l.cap) { l.cap = l.cap ? l.cap*2 : 4; l.items = (Statement**)realloc(l.items, l.cap*sizeof(Statement*)); }
+  l.items[l.count++] = s;
+}
 
 static RawStrList make_slist() { RawStrList l = {nullptr,0,0}; return l; }
 static void slist_push(RawStrList& l, char* s) {
@@ -174,6 +180,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
     RawConstraints   constraints;
     RawStrList       slist;
     RawCaseList      caselist;
+    RawStmtList      stlist;
     int              ival;
 }
 
@@ -195,6 +202,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %token TRIGGER BEFORE AFTER FOR EACH ROW_KW EXECUTE
 %token DEFAULT PRIMARY KEY UNIQUE CHECK_KW REFERENCES CASCADE RESTRICT
 %token BEGIN_KW
+%token WHILE DO LEAVE ITERATE
 %token COUNT SUM AVG MIN MAX
 %token TYPE_INT TYPE_FLOAT TYPE_VARCHAR
 %token CASE WHEN THEN ELSE END
@@ -207,6 +215,7 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 
 /* Non-terminals */
 %type <stmt_raw>  statement
+%type <stmt_raw>  proc_stmt
 %type <sel_raw>   select_stmt select_body
 %type <expr_raw>  expr expr_or expr_and expr_not expr_cmp expr_add expr_mul expr_unary expr_primary
 %type <expr_raw>  select_item opt_where opt_having
@@ -230,6 +239,8 @@ static Expr* make_quantified(BinOp op, int quant, Expr* l, SelectStmt* sub) {
 %type <olist>     opt_window_order_by
 %type <caselist>  case_when_then_list
 %type <expr_raw>  opt_case_else
+%type <stlist>    proc_stmt_list
+%type <str_val>   opt_loop_label
 
 %nonassoc UMINUS
 
@@ -263,6 +274,36 @@ statement:
       }
     | ROLLBACK_KW {
           auto st = new Statement(); st->type = StmtType::ST_ROLLBACK_TXN;
+          $$ = st;
+      }
+    | opt_loop_label WHILE expr DO proc_stmt_list END WHILE {
+          auto st = new Statement(); st->type = StmtType::ST_WHILE;
+          auto ws = std::make_shared<WhileStmt>();
+          if ($1) ws->label = take_str($1);
+          ws->condition = wrap($3);
+          for (int i = 0; i < $5.count; i++) {
+              ws->body.push_back(std::shared_ptr<Statement>($5.items[i]));
+          }
+          free($5.items);
+          st->while_stmt = ws;
+          $$ = st;
+      }
+    | LEAVE {
+          auto st = new Statement(); st->type = StmtType::ST_LEAVE;
+          $$ = st;
+      }
+    | LEAVE IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_LEAVE;
+          st->loop_label = take_str($2);
+          $$ = st;
+      }
+    | ITERATE {
+          auto st = new Statement(); st->type = StmtType::ST_ITERATE;
+          $$ = st;
+      }
+    | ITERATE IDENTIFIER {
+          auto st = new Statement(); st->type = StmtType::ST_ITERATE;
+          st->loop_label = take_str($2);
           $$ = st;
       }
     | EXPLAIN select_stmt {
@@ -570,6 +611,26 @@ statement:
           free($20.rows);
           st->merge = mg; $$ = st;
       }
+    ;
+
+proc_stmt:
+      statement { $$ = $1; }
+    ;
+
+proc_stmt_list:
+      proc_stmt ';' {
+          $$ = make_stlist();
+          stlist_push($$, $1);
+      }
+    | proc_stmt_list proc_stmt ';' {
+          $$ = $1;
+          stlist_push($$, $2);
+      }
+    ;
+
+opt_loop_label:
+      /* empty */ { $$ = nullptr; }
+    | IDENTIFIER ':' { $$ = $1; }
     ;
 
 insert_rows:

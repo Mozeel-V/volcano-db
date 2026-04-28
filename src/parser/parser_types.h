@@ -60,4 +60,11 @@ struct RawCaseList {
     int cap;
 };
 
+/* Procedural statement lists (BEGIN...END, WHILE...END WHILE) */
+struct RawStmtList {
+    ast::Statement** items;
+    int count;
+    int cap;
+};
+
 #endif // PARSER_TYPES_H
